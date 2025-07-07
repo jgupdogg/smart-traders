@@ -1,0 +1,247 @@
+# Solana Smart Traders Pipeline Configuration
+# Central configuration for all pipeline parameters
+
+# Pipeline Metadata
+pipeline:
+  name: "solana_smart_traders"
+  version: "1.0.0"
+  description: "Pipeline to identify profitable Solana traders using medallion architecture"
+  schedule: "0 */6 * * *"  # Every 6 hours
+  max_active_runs: 1
+  catchup: false
+
+# Bronze Tokens Task Configuration
+bronze_tokens:
+  # Token filtering criteria
+  token_limit: 50
+  min_liquidity: 100000          # $100k minimum liquidity
+  max_liquidity: 50000000        # $50M maximum liquidity  
+  min_volume_1h_usd: 50000       # $50k minimum 1-hour volume
+  min_price_change_2h_percent: 15.0   # 15% minimum 2-hour price change
+  min_price_change_24h_percent: 20.0  # 20% minimum 24-hour price change
+  
+  # API parameters
+  api_pagination_limit: 50       # Max tokens per API call
+  api_rate_limit_delay: 0.5      # Delay between API calls (seconds)
+  
+  # Processing parameters
+  batch_size: 10                 # Tokens processed per batch
+  max_processing_time_minutes: 30
+
+# Silver Tokens Task Configuration  
+silver_tokens:
+  # Selection criteria
+  min_holders: 100               # Minimum number of token holders
+  min_volume_24h: 50000          # $50k minimum 24-hour volume
+  selection_ratio: 0.2           # Select top 20% of bronze tokens
+  max_tokens_selected: 20        # Maximum tokens to select
+  
+  # Scoring weights
+  score_weights:
+    liquidity: 0.3
+    volume_24h: 0.25
+    price_change_24h: 0.2
+    holder_count: 0.15
+    trade_count_24h: 0.1
+
+# Bronze Whales Task Configuration
+bronze_whales:
+  # Whale criteria
+  top_holders_limit: 20          # Top N holders per token
+  min_holding_percentage: 0.5    # Minimum 0.5% holding percentage
+  
+  # API parameters
+  api_rate_limit_delay: 0.5      # Delay between API calls
+  max_tokens_per_run: 10         # Max tokens to process per run
+  
+  # Processing parameters
+  batch_size: 5                  # Tokens processed per batch
+  refetch_interval_hours: 72     # Refetch whale data every 72 hours
+
+# Silver Whales Task Configuration
+silver_whales:
+  # Whale selection criteria
+  min_tokens_held: 2             # Must hold at least 2 different tokens
+  min_total_value_usd: 10000     # $10k minimum total holdings value
+  exclude_cex_addresses: true    # Exclude known CEX addresses
+  max_whales_selected: 100       # Maximum whales to track
+  
+  # Known CEX addresses to exclude (partial list)
+  excluded_addresses:
+    - "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"  # Raydium
+    - "7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5"  # Serum DEX
+    - "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"  # Orca
+    - "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"  # Mango
+
+# Bronze Transactions Task Configuration
+bronze_transactions:
+  # Transaction fetching
+  max_transactions_per_wallet: 100    # Max transactions per wallet
+  lookback_days: 30                   # Look back 30 days for transactions
+  wallet_api_delay: 1.0               # Delay between wallet API calls
+  
+  # Processing parameters
+  batch_size: 5                       # Wallets processed per batch
+  max_wallets_per_run: 20             # Max wallets per run
+  refetch_interval_days: 30           # Refetch transactions every 30 days
+  
+  # Transaction filtering
+  min_transaction_value_usd: 100      # Filter out transactions < $100
+  include_transaction_types:
+    - "swap"
+    - "transfer"
+
+# Silver Wallet PnL Task Configuration
+silver_wallet_pnl:
+  # PnL calculation parameters
+  calculation_method: "fifo"          # FIFO cost basis calculation
+  include_unrealized: false           # Only calculate realized PnL
+  min_trades_for_calculation: 5       # Minimum trades needed for PnL calc
+  
+  # Processing parameters
+  wallet_batch_size: 10               # Wallets processed per batch
+  max_processing_time_minutes: 60     # Max processing time
+  memory_limit_mb: 2048               # Memory limit for processing
+  
+  # Performance thresholds
+  min_realized_pnl_usd: 100           # Minimum PnL to be considered
+  min_win_rate_percent: 30            # Minimum win rate percentage
+
+# Smart Traders (Gold) Task Configuration
+smart_traders:
+  # Smart trader qualification criteria
+  min_win_rate: 60.0                  # 60% minimum win rate
+  min_realized_pnl: 1000.0            # $1000 minimum realized PnL
+  min_trade_count: 10                 # Minimum 10 trades
+  min_trading_days: 7                 # Minimum 7 days of trading activity
+  
+  # Performance tiers
+  performance_tiers:
+    elite:
+      min_pnl: 10000                  # $10k+ PnL
+      min_roi: 50                     # 50%+ ROI
+      min_win_rate: 70                # 70%+ win rate
+    strong:
+      min_pnl: 5000                   # $5k+ PnL
+      min_roi: 25                     # 25%+ ROI
+      min_win_rate: 60                # 60%+ win rate
+    promising:
+      min_pnl: 1000                   # $1k+ PnL
+      min_roi: 15                     # 15%+ ROI
+      min_win_rate: 50                # 50%+ win rate
+    qualified:
+      min_pnl: 100                    # $100+ PnL
+      min_roi: 5                      # 5%+ ROI
+      min_win_rate: 40                # 40%+ win rate
+  
+  # Scoring algorithm weights
+  scoring_weights:
+    realized_pnl: 0.4                 # 40% weight on total PnL
+    roi_percentage: 0.3               # 30% weight on ROI
+    win_rate: 0.2                     # 20% weight on win rate
+    trade_frequency: 0.1              # 10% weight on trading activity
+
+# Database Configuration
+database:
+  # Connection settings
+  pool_size: 10
+  max_overflow: 20
+  pool_recycle_hours: 1
+  connection_timeout_seconds: 30
+  
+  # Batch processing
+  default_batch_size: 1000
+  max_batch_size: 5000
+  
+  # Maintenance
+  vacuum_analyze_frequency: "daily"
+  cleanup_old_states_days: 30
+
+# API Configuration
+api:
+  # BirdEye API settings
+  birdeye:
+    base_url: "https://public-api.birdeye.so"
+    rate_limit_per_second: 2
+    timeout_seconds: 30
+    max_retries: 3
+    backoff_factor: 2
+    
+  # Request settings
+  default_headers:
+    User-Agent: "SolanaSmartTraders/1.0"
+  
+  # Circuit breaker settings
+  circuit_breaker:
+    failure_threshold: 5
+    recovery_timeout_seconds: 60
+
+# Monitoring and Alerting
+monitoring:
+  # Health checks
+  health_check_interval_minutes: 5
+  
+  # Performance monitoring
+  track_memory_usage: true
+  track_execution_time: true
+  
+  # Alert thresholds
+  alerts:
+    max_task_duration_minutes: 120
+    max_memory_usage_mb: 4096
+    min_success_rate_percent: 90
+    
+  # Data quality checks
+  data_quality:
+    enabled: true
+    check_frequency: "after_each_task"
+    max_null_percentage: 10
+    max_duplicate_percentage: 5
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Log retention
+  max_log_files: 10
+  max_log_size_mb: 100
+  
+  # Specific logger levels
+  loggers:
+    "src.services.birdeye_client": "DEBUG"
+    "src.database": "INFO"
+    "src.tasks": "INFO"
+    "sqlalchemy.engine": "WARNING"
+
+# Error Handling
+error_handling:
+  # Retry configuration
+  max_retries: 3
+  retry_delay_seconds: 5
+  backoff_multiplier: 2
+  
+  # Failure handling
+  continue_on_partial_failure: true
+  max_consecutive_failures: 5
+  
+  # Notification settings
+  notify_on_failure: true
+  notification_channels:
+    - "email"
+    - "slack"  # If configured
+
+# Development and Testing
+development:
+  # Test mode settings
+  test_mode: false
+  mock_api_calls: false
+  use_sample_data: false
+  
+  # Debug settings
+  debug_sql: false
+  debug_api_calls: false
+  
+  # Performance testing
+  enable_profiling: false
+  profile_memory_usage: false

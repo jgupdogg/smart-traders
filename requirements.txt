@@ -1,0 +1,31 @@
+# Database and ORM
+sqlmodel==0.0.8
+sqlalchemy>=1.4.36,<2.0.0
+psycopg2-binary==2.9.9
+alembic==1.13.2
+
+# Data processing
+pandas==2.2.3
+numpy==1.26.4
+
+# API client
+requests==2.32.3
+aiohttp==3.10.5
+
+# Configuration
+pyyaml==6.0.2
+python-dotenv==1.0.1
+
+# Logging and monitoring
+structlog==24.4.0
+
+# Testing (for development)
+pytest==8.3.3
+pytest-asyncio==0.24.0
+
+# Type checking
+mypy==1.11.2
+
+# Utilities
+tenacity==9.0.0
+click==8.1.7
