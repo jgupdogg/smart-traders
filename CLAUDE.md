@@ -36,6 +36,13 @@ All database operations use SQLModel for type safety and automatic schema genera
 - **UPSERT operations**: PostgreSQL `ON CONFLICT` for idempotent processing
 - **Batch processing**: Configurable batch sizes for memory management
 - **Connection pooling**: Optimized database connections with retry logic
+- **NaN/NULL handling**: Robust data cleaning to handle missing values from API responses
+
+### Recent Improvements
+- **Enhanced Bronze Tokens Model**: Added flattened extension fields (coingecko_id, website, social links) for comprehensive token metadata
+- **Robust NaN Handling**: Implemented multi-layer data cleaning to prevent "integer out of range" errors when processing missing data
+- **Database Operations**: Enhanced UPSERT operations with comprehensive NaN value cleaning at the database level
+- **Correct Database Configuration**: Fixed database name and connection configurations
 
 ## Key Commands
 
@@ -60,7 +67,7 @@ docker-compose exec airflow-webserver alembic upgrade head
 docker-compose exec airflow-webserver alembic revision --autogenerate -m "description"
 
 # Check database health
-docker-compose exec postgres psql -U trader -d solana_data -c "SELECT 1;"
+docker-compose exec postgres psql -U trader -d solana-smart-traders -c "SELECT 1;"
 ```
 
 ### Airflow Operations
@@ -69,7 +76,7 @@ docker-compose exec postgres psql -U trader -d solana_data -c "SELECT 1;"
 # http://localhost:8080 (admin/admin)
 
 # Trigger DAG manually
-docker-compose exec airflow-webserver airflow dags trigger smart_traders_pipeline
+docker-compose exec airflow-webserver airflow dags trigger solana_smart_traders_pipeline
 
 # Check DAG status
 docker-compose exec airflow-webserver airflow dags list
@@ -81,12 +88,12 @@ docker-compose exec airflow-webserver airflow tasks logs smart_traders_pipeline 
 ### Data Operations
 ```bash
 # Check table statistics
-docker-compose exec postgres psql -U trader -d solana_data -c "
+docker-compose exec postgres psql -U trader -d solana-smart-traders -c "
 SELECT schemaname, tablename, n_tup_ins, n_tup_upd, n_tup_del 
 FROM pg_stat_user_tables;"
 
 # View pipeline state
-docker-compose exec postgres psql -U trader -d solana_data -c "
+docker-compose exec postgres psql -U trader -d solana-smart-traders -c "
 SELECT task_name, state, COUNT(*) 
 FROM pipeline.pipeline_state 
 GROUP BY task_name, state;"

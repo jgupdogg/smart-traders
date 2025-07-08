@@ -73,8 +73,26 @@ class DatabaseOperations:
                 end_idx = min(start_idx + batch_size, total_records)
                 batch_df = df.iloc[start_idx:end_idx]
                 
-                # Convert DataFrame to list of dictionaries
-                records = batch_df.to_dict('records')
+                # Convert DataFrame to list of dictionaries, handling NaN values
+                # Use multiple approaches to clean NaN values
+                import numpy as np
+                
+                # First replace NaN values with None
+                clean_batch_df = batch_df.where(pd.notnull(batch_df), None)
+                records = clean_batch_df.to_dict('records')
+                
+                # Additional cleaning of records to handle any remaining NaN values
+                cleaned_records = []
+                for record in records:
+                    cleaned_record = {}
+                    for key, value in record.items():
+                        if pd.isna(value) or (isinstance(value, float) and np.isnan(value)):
+                            cleaned_record[key] = None
+                        else:
+                            cleaned_record[key] = value
+                    cleaned_records.append(cleaned_record)
+                
+                records = cleaned_records
                 
                 # Create INSERT statement
                 stmt = insert(table).values(records)

@@ -86,6 +86,12 @@ def process_silver_tokens(**context) -> Dict[str, Any]:
             # Convert to DataFrame
             df = pd.DataFrame(bronze_tokens_data)
             
+            # Clean DataFrame immediately after creation - replace NaN with None more aggressively
+            # Use multiple approaches to ensure all NaN values are handled
+            import numpy as np
+            df = df.replace([np.nan], [None])
+            df = df.where(pd.notnull(df), None)
+            
             # Simple approach: process all bronze tokens without filtering
             logger.info("Processing all bronze tokens without filtering...")
             
@@ -94,11 +100,30 @@ def process_silver_tokens(**context) -> Dict[str, Any]:
             
             logger.info(f"Selected {len(selected_df)} tokens (all unprocessed bronze tokens)")
             
+            # Helper function to safely convert values
+            def safe_value(val):
+                """Convert pandas values to database-safe values, handling NaN."""
+                if val is None:
+                    return None
+                if pd.isna(val):
+                    return None
+                # Handle the case where val might be a numpy NaN or float('nan')
+                if isinstance(val, float) and (val != val):  # NaN check
+                    return None
+                return val
+            
             # Prepare silver tokens data with simple structure
             silver_tokens_data = []
             for _, token in selected_df.iterrows():
+                # Convert holder to int if it's not None and not NaN
+                holder_count = token['holder']
+                if holder_count is not None and not pd.isna(holder_count) and isinstance(holder_count, float):
+                    holder_count = int(holder_count)
+                elif pd.isna(holder_count):
+                    holder_count = None
+                
                 silver_token = {
-                    'token_address': token['token_address'],
+                    'token_address': safe_value(token['token_address']),
                     'selection_score': 1.0,  # Simple default score
                     'selection_reason': {
                         'selection_criteria': 'all_bronze_tokens',
@@ -107,15 +132,15 @@ def process_silver_tokens(**context) -> Dict[str, Any]:
                     'selected_at': datetime.utcnow(),
                     'whales_processed': False,
                     'whales_processed_at': None,
-                    # Denormalized data
-                    'symbol': token['symbol'],
-                    'name': token['name'],
-                    'market_cap': token['market_cap'],
-                    'price_change_24h_percent': token['price_change_24h_percent'],
-                    'volume_24h_usd': token['volume_24h_usd'],
-                    'liquidity': token['liquidity'],
-                    'holder_count': token['holder'],
-                    'price': token['price']
+                    # Denormalized data with safe value conversion
+                    'symbol': safe_value(token['symbol']),
+                    'name': safe_value(token['name']),
+                    'market_cap': safe_value(token['market_cap']),
+                    'price_change_24h_percent': safe_value(token['price_change_24h_percent']),
+                    'volume_24h_usd': safe_value(token['volume_24h_usd']),
+                    'liquidity': safe_value(token['liquidity']),
+                    'holder_count': holder_count,
+                    'price': safe_value(token['price'])
                 }
                 silver_tokens_data.append(silver_token)
             

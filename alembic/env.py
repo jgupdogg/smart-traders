@@ -39,8 +39,8 @@ def get_database_url():
     user = os.getenv('POSTGRES_USER', 'trader')
     password = os.getenv('POSTGRES_PASSWORD', 'trader_password')
     host = os.getenv('POSTGRES_HOST', 'localhost')
-    port = os.getenv('POSTGRES_PORT', '5432')
-    database = os.getenv('POSTGRES_DB', 'solana_data')
+    port = os.getenv('POSTGRES_PORT', '5433')
+    database = os.getenv('POSTGRES_DB', 'solana-smart-traders')
     
     return f"postgresql://{user}:{password}@{host}:{port}/{database}"
 

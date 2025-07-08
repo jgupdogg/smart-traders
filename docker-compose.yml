@@ -14,7 +14,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trader}"]
       interval: 10s
@@ -62,6 +62,8 @@ services:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/config:/opt/airflow/config
       - ./src:/opt/airflow/src
+      - ./alembic:/opt/airflow/alembic
+      - ./alembic.ini:/opt/airflow/alembic.ini
       - airflow_logs:/opt/airflow/logs
     ports:
       - "8080:8080"

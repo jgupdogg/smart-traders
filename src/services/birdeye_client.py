@@ -260,6 +260,34 @@ class BirdEyeAPIClient:
                     "recent_listing_time": token.get('recent_listing_time')
                 }
                 
+                # Extract extensions data if present
+                extensions = token.get('extensions', {})
+                if extensions:
+                    normalized_token.update({
+                        "coingecko_id": extensions.get('coingecko_id'),
+                        "serum_v3_usdc": extensions.get('serum_v3_usdc'),
+                        "serum_v3_usdt": extensions.get('serum_v3_usdt'),
+                        "website": extensions.get('website'),
+                        "telegram": extensions.get('telegram'),
+                        "twitter": extensions.get('twitter'),
+                        "description": extensions.get('description'),
+                        "discord": extensions.get('discord'),
+                        "medium": extensions.get('medium')
+                    })
+                else:
+                    # Set defaults for extensions if not present
+                    normalized_token.update({
+                        "coingecko_id": None,
+                        "serum_v3_usdc": None,
+                        "serum_v3_usdt": None,
+                        "website": None,
+                        "telegram": None,
+                        "twitter": None,
+                        "description": None,
+                        "discord": None,
+                        "medium": None
+                    })
+                
                 # Only add tokens with valid addresses
                 if normalized_token["token_address"]:
                     normalized_tokens.append(normalized_token)

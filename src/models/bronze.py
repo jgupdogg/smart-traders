@@ -67,6 +67,17 @@ class BronzeToken(SQLModel, table=True):
     holder: Optional[int] = Field(default=None, description="Number of token holders")
     recent_listing_time: Optional[int] = Field(default=None, description="Unix timestamp of recent listing")
     
+    # Extensions data (flattened from API response)
+    coingecko_id: Optional[str] = Field(default=None, max_length=100, description="CoinGecko ID")
+    serum_v3_usdc: Optional[str] = Field(default=None, max_length=44, description="Serum V3 USDC market address")
+    serum_v3_usdt: Optional[str] = Field(default=None, max_length=44, description="Serum V3 USDT market address")
+    website: Optional[str] = Field(default=None, max_length=500, description="Token website URL")
+    telegram: Optional[str] = Field(default=None, max_length=500, description="Telegram link")
+    twitter: Optional[str] = Field(default=None, max_length=500, description="Twitter link")
+    description: Optional[str] = Field(default=None, max_length=1000, description="Token description")
+    discord: Optional[str] = Field(default=None, max_length=500, description="Discord link")
+    medium: Optional[str] = Field(default=None, max_length=500, description="Medium link")
+    
     # Metadata and processing state
     ingested_at: datetime = Field(default_factory=datetime.utcnow, description="When record was ingested")
     silver_processed: bool = Field(default=False, description="Whether processed for silver layer")
