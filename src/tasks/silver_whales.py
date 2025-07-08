@@ -50,7 +50,7 @@ def process_silver_whales(**context) -> Dict[str, Any]:
     
     try:
         with get_db_session() as session:
-            # Get unique whale addresses from bronze_whales
+            # Get ALL unique whale addresses from bronze_whales (no filters)
             unique_whales_query = select(
                 BronzeWhale.wallet_address,
                 func.count(BronzeWhale.token_address).label('tokens_held_count'),
@@ -59,8 +59,6 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                 func.sum(BronzeWhale.ui_amount).label('total_tokens_held')
             ).group_by(
                 BronzeWhale.wallet_address
-            ).having(
-                func.count(BronzeWhale.token_address) >= config.min_tokens_held
             )
             
             unique_whales_result = session.exec(unique_whales_query).all()
@@ -85,10 +83,7 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                 token_symbols = whale_data.token_symbols
                 
                 try:
-                    # Skip if wallet is in excluded addresses
-                    if config.exclude_cex_addresses and wallet_address in config.excluded_addresses:
-                        logger.info(f"Skipping excluded address: {wallet_address}")
-                        continue
+                    # Process ALL whales without exclusions for now
                     
                     # Create state for this whale
                     state_manager.create_or_update_state(
@@ -121,18 +116,7 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                             "rank": getattr(detail, 'rank', 0)
                         })
                     
-                    # Filter by minimum total value if configured
-                    if config.min_total_value_usd > 0 and total_value_held < config.min_total_value_usd:
-                        logger.info(f"Skipping whale {wallet_address} - total value {total_value_held} below minimum")
-                        
-                        state_manager.create_or_update_state(
-                            task_name="silver_whales",
-                            entity_type="whale",
-                            entity_id=wallet_address,
-                            state="skipped",
-                            metadata={"skip_reason": "below_min_value", "total_value": total_value_held}
-                        )
-                        continue
+                    # No filtering - process all whales
                     
                     # Create whale record
                     whale_record = {
@@ -160,10 +144,7 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                     
                     processed_whales += 1
                     
-                    # Limit total whales if configured
-                    if config.max_whales_selected > 0 and processed_whales >= config.max_whales_selected:
-                        logger.info(f"Reached maximum whale limit: {config.max_whales_selected}")
-                        break
+                    # No limits - process all whales
                     
                 except Exception as e:
                     logger.error(f"Error processing whale {wallet_address}: {e}")

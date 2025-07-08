@@ -15,6 +15,15 @@ This project implements a medallion architecture pipeline for identifying profit
 bronze_tokens → silver_tokens → bronze_whales → silver_whales → bronze_transactions → silver_wallet_pnl → smart_traders
 ```
 
+### Current Pipeline Status
+- ✅ **bronze_tokens**: Working - Fetches trending tokens from BirdEye API
+- ✅ **silver_tokens**: Working - Selects top tokens based on scoring criteria
+- ✅ **bronze_whales**: Working - Fetches top holders for selected tokens using BirdEye v3 API
+- ✅ **silver_whales**: Working - Processes all unique whale addresses without filtering
+- 🔄 **bronze_transactions**: Ready for implementation - Fetches transaction history for whales
+- 🔄 **silver_wallet_pnl**: Ready for implementation - Calculates FIFO-based PnL metrics
+- 🔄 **smart_traders**: Ready for implementation - Ranks traders by performance tiers
+
 ## Key Features
 
 ### Precise State Tracking
@@ -42,7 +51,13 @@ All database operations use SQLModel for type safety and automatic schema genera
 - **Enhanced Bronze Tokens Model**: Added flattened extension fields (coingecko_id, website, social links) for comprehensive token metadata
 - **Robust NaN Handling**: Implemented multi-layer data cleaning to prevent "integer out of range" errors when processing missing data
 - **Database Operations**: Enhanced UPSERT operations with comprehensive NaN value cleaning at the database level
-- **Correct Database Configuration**: Fixed database name and connection configurations
+- **BirdEye API v3 Integration**: Updated to use correct `/defi/v3/token/holder` endpoint with proper response normalization
+- **SQLModel Column Access Fixes**: Implemented safe attribute access using `getattr()` with fallbacks to handle SQLModel mapping issues
+- **Duplicate Wallet Handling**: Added deduplication logic for wallets with multiple token accounts for the same token
+- **Raw SQL Fallback**: Added raw SQL queries as fallback for SQLModel tuple wrapping issues
+- **Consistent Client Usage**: Standardized BirdEye API client initialization and usage patterns across all bronze tasks
+- **Status Field Optimization**: Shortened status values to fit database varchar constraints
+- **Silver Layer Processing**: Removed all filters from silver_whales to ensure complete data flow from bronze to silver layers
 
 ## Key Commands
 
