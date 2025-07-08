@@ -52,7 +52,8 @@ def process_bronze_transactions(**context) -> Dict[str, Any]:
     
     try:
         # Initialize BirdEye client
-        client = BirdEyeAPIClient(api_key=settings.birdeye_api_key)
+        api_key = settings.get_birdeye_api_key()
+        birdeye_client = BirdEyeAPIClient(api_key)
         
         with get_db_session() as session:
             # Get whales that need transaction processing
@@ -112,7 +113,7 @@ def process_bronze_transactions(**context) -> Dict[str, Any]:
                                 )
                                 continue
                         
-                        transactions_data = client.get_wallet_transactions(
+                        transactions_data = birdeye_client.get_wallet_transactions(
                             wallet_address=wallet_address,
                             limit=config.max_transactions_per_wallet,
                             before=int(end_date.timestamp()),

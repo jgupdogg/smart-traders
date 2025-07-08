@@ -112,12 +112,13 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                     for detail in whale_details:
                         # For now, use ui_amount as proxy for value
                         # In production, would need to fetch current token prices
-                        total_value_held += detail.ui_amount or 0
+                        ui_amount = getattr(detail, 'ui_amount', 0) or 0
+                        total_value_held += ui_amount
                         source_tokens.append({
-                            "token_address": detail.token_address,
-                            "token_symbol": detail.token_symbol,
-                            "ui_amount": detail.ui_amount,
-                            "rank": detail.rank
+                            "token_address": getattr(detail, 'token_address', ''),
+                            "token_symbol": getattr(detail, 'token_symbol', ''),
+                            "ui_amount": ui_amount,
+                            "rank": getattr(detail, 'rank', 0)
                         })
                     
                     # Filter by minimum total value if configured
@@ -196,7 +197,7 @@ def process_silver_whales(**context) -> Dict[str, Any]:
                 logger.info(f"Stored {len(whale_records)} whale records")
         
         # Log task completion
-        status = "completed" if not failed_whales else "completed_with_errors"
+        status = "completed" if not failed_whales else "partial_success"
         
         log_task_completion(
             log_id=task_log.id,

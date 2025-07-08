@@ -8,7 +8,7 @@ import pandas as pd
 import time
 from datetime import datetime
 from typing import Dict, Any, List
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from src.services.birdeye_client import BirdEyeAPIClient
 from src.models.bronze import BronzeWhale
 from src.models.silver import SilverToken
@@ -52,15 +52,52 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
     
     try:
         # Initialize BirdEye client
-        client = BirdEyeAPIClient(api_key=settings.birdeye_api_key)
+        api_key = settings.get_birdeye_api_key()
+        birdeye_client = BirdEyeAPIClient(api_key)
         
         with get_db_session() as session:
-            # Get tokens that need whale processing
-            tokens_query = select(SilverToken).where(
-                SilverToken.whales_processed == False
-            ).limit(config.max_tokens_per_run)
+            # Debug: Check table structure first
+            try:
+                result = session.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'silver_tokens' AND table_schema = 'silver'"))
+                columns = [row[0] for row in result]
+                logger.info(f"silver_tokens columns: {columns}")
+            except Exception as e:
+                logger.warning(f"Could not check table structure: {e}")
             
-            tokens_to_process = session.exec(tokens_query).all()
+            # Get tokens that need whale processing - try raw SQL first
+            try:
+                raw_query = text("""
+                    SELECT * FROM silver.silver_tokens 
+                    WHERE whales_processed = false 
+                    LIMIT :limit
+                """)
+                result = session.execute(raw_query, {"limit": config.max_tokens_per_run})
+                tokens_data = result.fetchall()
+                
+                logger.info(f"Found {len(tokens_data)} tokens via raw SQL")
+                if tokens_data:
+                    logger.info(f"First token columns: {list(tokens_data[0]._mapping.keys())}")
+                    
+                tokens_to_process = []
+                for row in tokens_data:
+                    # Create a simple dict with the data we need
+                    token_dict = {
+                        'token_address': row._mapping.get('token_address'),
+                        'symbol': row._mapping.get('symbol'),
+                        'name': row._mapping.get('name'),
+                        'whales_processed': row._mapping.get('whales_processed'),
+                        '_row': row  # Keep original row for updates
+                    }
+                    tokens_to_process.append(token_dict)
+                    
+            except Exception as e:
+                logger.error(f"Raw SQL failed: {e}")
+                # Fallback to SQLModel query
+                tokens_query = select(SilverToken).where(
+                    SilverToken.whales_processed == False
+                ).limit(config.max_tokens_per_run)
+                
+                tokens_to_process = list(session.exec(tokens_query))
             
             if not tokens_to_process:
                 logger.info("No tokens need whale processing")
@@ -78,7 +115,20 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                 batch = tokens_to_process[i:i + config.batch_size]
                 
                 for token in batch:
-                    token_address = token.token_address
+                    # Handle both dict format (from raw SQL) and SQLModel format
+                    if isinstance(token, dict):
+                        token_address = token['token_address']
+                        token_symbol = token['symbol'] or 'unknown'
+                        token_name = token['name'] or 'unknown'
+                        original_token = token.get('_row')  # For updates
+                    else:
+                        # SQLModel object
+                        token_address = token.token_address
+                        token_symbol = token.symbol or 'unknown'
+                        token_name = token.name or 'unknown'
+                        original_token = token
+                    
+                    logger.info(f"Processing token {token_symbol} ({token_address})")
                     
                     try:
                         # Create/update state for this token
@@ -87,19 +137,19 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                             entity_type="token",
                             entity_id=token_address,
                             state="processing",
-                            metadata={"token_symbol": token.symbol}
+                            metadata={"token_symbol": token_symbol}
                         )
                         
                         # Fetch whale data from BirdEye API
-                        logger.info(f"Fetching whale data for token {token.symbol} ({token_address})")
+                        logger.info(f"Fetching whale data for token {token_symbol} ({token_address})")
                         
-                        whale_data = client.get_token_holders(
+                        whale_response = birdeye_client.get_token_holders(
                             token_address=token_address,
                             limit=config.top_holders_limit
                         )
                         
-                        if not whale_data.get('success', False):
-                            logger.warning(f"API failed for token {token_address}: {whale_data}")
+                        if not whale_response.get('success', False):
+                            logger.warning(f"API failed for token {token_address}: {whale_response}")
                             failed_tokens.append(token_address)
                             
                             state_manager.create_or_update_state(
@@ -107,11 +157,12 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                                 entity_type="token",
                                 entity_id=token_address,
                                 state="failed",
-                                error_message=f"API failed: {whale_data.get('msg', 'Unknown error')}"
+                                error_message=f"API failed: {whale_response.get('msg', 'Unknown error')}"
                             )
                             continue
                         
-                        holders = whale_data.get('data', {}).get('items', [])
+                        # Normalize the response using the client's method
+                        holders = birdeye_client.normalize_holders_response(whale_response)
                         
                         if not holders:
                             logger.warning(f"No holder data found for token {token_address}")
@@ -125,34 +176,43 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                             )
                             
                             # Update silver_tokens table
-                            token.whales_processed = True
-                            token.whales_processed_at = datetime.utcnow()
-                            session.add(token)
-                            session.commit()
+                            if isinstance(token, dict):
+                                # For raw SQL, need to update via raw SQL
+                                update_query = text("""
+                                    UPDATE silver.silver_tokens 
+                                    SET whales_processed = true, whales_processed_at = :timestamp 
+                                    WHERE token_address = :token_address
+                                """)
+                                session.execute(update_query, {
+                                    "timestamp": datetime.utcnow(), 
+                                    "token_address": token_address
+                                })
+                                session.commit()
+                            else:
+                                # SQLModel object
+                                original_token.whales_processed = True
+                                original_token.whales_processed_at = datetime.utcnow()
+                                session.add(original_token)
+                                session.commit()
                             
                             processed_tokens += 1
                             continue
                         
                         # Process holders into DataFrame
                         whale_records = []
-                        for rank, holder in enumerate(holders, 1):
-                            # Filter by minimum holding percentage if configured
-                            if config.min_holding_percentage > 0:
-                                holding_percentage = holder.get('percentage', 0)
-                                if holding_percentage < config.min_holding_percentage:
-                                    continue
-                            
+                        for holder in holders:
+                            # The normalized response already has rank, wallet_address, etc.
                             whale_record = {
                                 'token_address': token_address,
-                                'wallet_address': holder.get('address', ''),
-                                'token_symbol': token.symbol,
-                                'token_name': token.name,
-                                'rank': rank,
-                                'amount': holder.get('amount', ''),
-                                'ui_amount': holder.get('uiAmount', 0),
-                                'decimals': holder.get('decimals', 0),
-                                'mint': holder.get('mint', ''),
-                                'token_account': holder.get('tokenAccount', ''),
+                                'wallet_address': holder['wallet_address'],
+                                'token_symbol': token_symbol,
+                                'token_name': token_name,
+                                'rank': holder['rank'],
+                                'amount': holder['amount'],
+                                'ui_amount': holder['ui_amount'],
+                                'decimals': holder['decimals'],
+                                'mint': holder['mint'],
+                                'token_account': holder['token_account'],
                                 'fetched_at': datetime.utcnow(),
                                 'batch_id': run_id,
                                 'data_source': 'birdeye_v3'
@@ -160,22 +220,27 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                             whale_records.append(whale_record)
                         
                         if whale_records:
-                            # Convert to DataFrame and upsert
+                            # Convert to DataFrame
                             df = pd.DataFrame(whale_records)
+                            
+                            # Deduplicate by token_address + wallet_address, keeping the best rank (first occurrence)
+                            df_grouped = df.drop_duplicates(subset=['token_address', 'wallet_address'], keep='first')
+                            
+                            if len(df) != len(df_grouped):
+                                logger.info(f"Merged {len(df)} holdings into {len(df_grouped)} unique wallet positions for token {token_symbol}")
                             
                             upsert_result = upsert_dataframe(
                                 session=session,
-                                df=df,
-                                table_name="bronze_whales",
-                                schema_name="bronze",
-                                primary_keys=["token_address", "wallet_address"],
-                                model_class=BronzeWhale
+                                df=df_grouped,
+                                model_class=BronzeWhale,
+                                conflict_columns=["token_address", "wallet_address"],
+                                batch_size=config.batch_size
                             )
                             
                             new_whales += upsert_result.get('inserted', 0)
                             updated_whales += upsert_result.get('updated', 0)
                             
-                            logger.info(f"Stored {len(whale_records)} whale records for token {token.symbol}")
+                            logger.info(f"Stored {len(whale_records)} whale records for token {token_symbol}")
                         
                         # Mark token as processed
                         state_manager.create_or_update_state(
@@ -187,10 +252,24 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                         )
                         
                         # Update silver_tokens table
-                        token.whales_processed = True
-                        token.whales_processed_at = datetime.utcnow()
-                        session.add(token)
-                        session.commit()
+                        if isinstance(token, dict):
+                            # For raw SQL, need to update via raw SQL
+                            update_query = text("""
+                                UPDATE silver.silver_tokens 
+                                SET whales_processed = true, whales_processed_at = :timestamp 
+                                WHERE token_address = :token_address
+                            """)
+                            session.execute(update_query, {
+                                "timestamp": datetime.utcnow(), 
+                                "token_address": token_address
+                            })
+                            session.commit()
+                        else:
+                            # SQLModel object
+                            original_token.whales_processed = True
+                            original_token.whales_processed_at = datetime.utcnow()
+                            session.add(original_token)
+                            session.commit()
                         
                         processed_tokens += 1
                         
@@ -215,7 +294,7 @@ def process_bronze_whales(**context) -> Dict[str, Any]:
                     time.sleep(1)
         
         # Log task completion
-        status = "completed" if not failed_tokens else "completed_with_errors"
+        status = "completed" if not failed_tokens else "partial_success"
         
         log_task_completion(
             log_id=task_log.id,

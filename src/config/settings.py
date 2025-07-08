@@ -437,6 +437,11 @@ class Settings:
     def is_test_mode(self) -> bool:
         """Check if running in test mode."""
         return self.get('development.test_mode', False) or os.getenv('TEST_MODE', '').lower() == 'true'
+    
+    @property
+    def birdeye_api_key(self) -> str:
+        """Get BirdEye API key as a property."""
+        return self.get_birdeye_api_key()
 
 
 # Global settings instance

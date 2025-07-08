@@ -126,7 +126,7 @@ class BirdEyeAPIClient:
         offset: int = 0,
         limit: int = 20
     ) -> Dict[str, Any]:
-        """Get top holders for a specific token.
+        """Get top holders for a specific token using v3 API.
         
         Args:
             token_address: Token mint address
@@ -137,13 +137,26 @@ class BirdEyeAPIClient:
             API response with holder data
         """
         params = {
-            "address": token_address,
+            "address": token_address,  # Token address to get holders for
             "offset": offset,
             "limit": limit
         }
         
         logger.debug(f"Getting top holders for token {token_address}")
-        return self._make_request("/defi/token_holders", params)
+        return self._make_request("/defi/v3/token/holder", params)
+    
+    def get_token_holders(self, token_address: str, limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+        """Alias for get_token_top_holders to match bronze_whales task usage.
+        
+        Args:
+            token_address: Token mint address
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+            
+        Returns:
+            API response with holder data
+        """
+        return self.get_token_top_holders(token_address, offset, limit)
     
     def get_wallet_transactions(
         self,
@@ -300,37 +313,44 @@ class BirdEyeAPIClient:
         return normalized_tokens
     
     def normalize_holders_response(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Normalize holders response to consistent format.
+        """Normalize holders response to consistent format for v3 API.
         
         Args:
-            response: Raw API response
+            response: Raw API response from /defi/v3/token/holder
             
         Returns:
             List of normalized holder dictionaries
         """
         if not response.get('success', True) or 'data' not in response:
-            logger.warning("Invalid holders response format")
+            logger.warning(f"Invalid holders response format: {response}")
             return []
         
         data = response['data']
-        holders = data.get('items', data.get('holders', []))
+        holders = data.get('items', [])
+        
+        if not holders:
+            logger.warning("No holders found in response")
+            return []
         
         normalized_holders = []
         for idx, holder in enumerate(holders):
             try:
+                # Map v3 API response format to our internal format
                 normalized_holder = {
                     "wallet_address": str(holder.get('owner', '')),
-                    "rank": idx + 1,
+                    "rank": idx + 1,  # Calculate rank based on position
                     "amount": str(holder.get('amount', '0')),
-                    "ui_amount": float(holder.get('ui_amount', 0)) if holder.get('ui_amount') is not None else None,
+                    "ui_amount": float(holder.get('ui_amount', 0)) if holder.get('ui_amount') is not None else 0.0,
                     "decimals": int(holder.get('decimals', 9)),
                     "mint": str(holder.get('mint', '')),
                     "token_account": str(holder.get('token_account', ''))
                 }
                 
                 # Only add holders with valid wallet addresses
-                if normalized_holder["wallet_address"]:
+                if normalized_holder["wallet_address"] and normalized_holder["wallet_address"] != '':
                     normalized_holders.append(normalized_holder)
+                else:
+                    logger.warning(f"Skipping holder with invalid address: {holder}")
                     
             except Exception as e:
                 logger.warning(f"Failed to normalize holder data: {e}, holder: {holder}")
