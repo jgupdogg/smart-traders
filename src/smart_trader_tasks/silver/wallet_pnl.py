@@ -1,6 +1,6 @@
 """
-Silver wallet PnL task - Calculate FIFO-based PnL for wallets with detailed cost averaging.
-Processes transaction data to calculate trading performance metrics at the wallet level.
+Silver wallet PnL task - Calculate FIFO-based PnL for wallets.
+Standardized implementation with consistent patterns and error handling.
 """
 
 import logging
@@ -14,9 +14,8 @@ from sqlalchemy import and_, select
 from src.models.bronze import BronzeTransaction
 from src.models.silver import SilverWhale, SilverWalletPnL
 from src.database.connection import get_db_session
-from src.database.operations import upsert_dataframe
-from src.database.state_manager import StateManager, log_task_start, log_task_completion
-from src.config.settings import get_settings, get_silver_wallet_pnl_config
+from src.config.settings import get_silver_wallet_pnl_config
+from smart_trader_tasks.common import SilverTaskBase
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +63,6 @@ class TokenPosition:
         self.total_quantity += quantity
         self.total_purchase_value += quantity * price
         
-        logger.debug(f"Added purchase: {quantity} {self.token_symbol} at ${price} (total: {self.total_quantity})")
-    
     def process_sale(self, quantity: float, price: float, timestamp: datetime, tx_hash: str) -> float:
         """Process a sale using FIFO method and return realized PnL."""
         if quantity <= 0 or price <= 0:
@@ -103,7 +100,6 @@ class TokenPosition:
         else:
             self.losing_trades += 1
         
-        logger.debug(f"Processed sale: {quantity} {self.token_symbol} at ${price}, PnL: ${trade_pnl:.2f}")
         return trade_pnl
     
     def get_unrealized_pnl(self, current_price: float) -> float:
@@ -286,200 +282,212 @@ class WalletPnLCalculator:
         }
 
 
-def process_silver_wallet_pnl(**context) -> Dict[str, Any]:
-    """
-    Calculate FIFO-based PnL for wallets with detailed cost averaging.
+class SilverWalletPnLTask(SilverTaskBase):
+    """Silver wallet PnL task implementation."""
     
-    Args:
-        context: Airflow context dictionary
+    def __init__(self, context: Dict[str, Any]):
+        super().__init__("silver_wallet_pnl", context)
+        self.config = get_silver_wallet_pnl_config()
         
-    Returns:
-        Dictionary with task execution results
-    """
-    settings = get_settings()
-    config = get_silver_wallet_pnl_config()
-    
-    # Start task execution logging
-    run_id = context.get('run_id', datetime.now().strftime("%Y%m%d_%H%M%S"))
-    execution_date = datetime.utcnow()
-    
-    task_log = log_task_start(
-        task_name="silver_wallet_pnl",
-        run_id=run_id,
-        execution_date=execution_date,
-        metadata={"config": config.__dict__}
-    )
-    
-    state_manager = StateManager()
-    processed_wallets = 0
-    new_pnl_records = 0
-    updated_pnl_records = 0
-    failed_wallets = []
-    
-    try:
-        with get_db_session() as session:
-            # Get whales that need PnL processing
-            whales_query = select(SilverWhale).where(
-                and_(
-                    SilverWhale.pnl_processed == False,
-                    SilverWhale.transactions_processed == True
-                )
+    def get_whales_to_process(self, session: Any) -> List[Any]:
+        """Get whales that need PnL processing."""
+        whales_query = select(SilverWhale).where(
+            and_(
+                SilverWhale.pnl_processed == False,
+                SilverWhale.transactions_processed == True
+            )
+        )
+        
+        return list(session.exec(whales_query))
+        
+    def get_wallet_transactions(self, session: Any, wallet_address: str) -> List[Any]:
+        """Get all transactions for a wallet."""
+        transactions_query = select(BronzeTransaction).where(
+            BronzeTransaction.wallet_address == wallet_address
+        ).order_by(BronzeTransaction.timestamp)
+        
+        return list(session.exec(transactions_query))
+        
+    def calculate_wallet_pnl(self, wallet_address: str, transactions: List[Any]) -> Dict[str, Any]:
+        """Calculate PnL for a wallet using FIFO method."""
+        calculator = WalletPnLCalculator(wallet_address)
+        
+        # Process each transaction
+        for tx in transactions:
+            calculator.process_transaction(tx)
+        
+        # Get final metrics
+        return calculator.calculate_metrics()
+        
+    def process_wallet(self, session: Any, whale: Any) -> Dict[str, Any]:
+        """Process PnL for a single wallet."""
+        wallet_address = whale.wallet_address
+        
+        try:
+            # Create/update state for this wallet
+            self.state_manager.create_or_update_state(
+                task_name=self.task_name,
+                entity_type="wallet",
+                entity_id=wallet_address,
+                state="processing",
+                metadata={"tokens_held": whale.tokens_held_count}
             )
             
-            whales_to_process = session.exec(whales_query).all()
+            # Get all transactions for this wallet
+            transactions = self.get_wallet_transactions(session, wallet_address)
             
-            if not whales_to_process:
-                logger.info("No whales need PnL processing")
-                return {
-                    "status": "completed",
-                    "processed_wallets": 0,
-                    "new_pnl_records": 0,
-                    "message": "No wallets to process"
-                }
-            
-            logger.info(f"Processing {len(whales_to_process)} wallets for PnL calculation")
-            
-            # Process wallets
-            pnl_records = []
-            for whale in whales_to_process:
-                wallet_address = whale.wallet_address
+            if len(transactions) < self.config.min_trades_for_calculation:
+                self.logger.info(f"Skipping wallet {wallet_address} - only {len(transactions)} transactions")
                 
-                try:
-                    # Create/update state for this wallet
-                    state_manager.create_or_update_state(
-                        task_name="silver_wallet_pnl",
-                        entity_type="wallet",
-                        entity_id=wallet_address,
-                        state="processing",
-                        metadata={"tokens_held": whale.tokens_held_count}
-                    )
-                    
-                    # Get all transactions for this wallet
-                    transactions_query = select(BronzeTransaction).where(
-                        BronzeTransaction.wallet_address == wallet_address
-                    ).order_by(BronzeTransaction.timestamp)
-                    
-                    transactions = session.exec(transactions_query).all()
-                    
-                    if len(transactions) < config.min_trades_for_calculation:
-                        logger.info(f"Skipping wallet {wallet_address} - only {len(transactions)} transactions")
-                        
-                        state_manager.create_or_update_state(
-                            task_name="silver_wallet_pnl",
-                            entity_type="wallet",
-                            entity_id=wallet_address,
-                            state="skipped",
-                            metadata={"skip_reason": "insufficient_trades", "transaction_count": len(transactions)}
-                        )
-                        continue
-                    
-                    # Calculate PnL using FIFO method
-                    logger.info(f"Calculating PnL for wallet {wallet_address} with {len(transactions)} transactions")
-                    
-                    calculator = WalletPnLCalculator(wallet_address)
-                    
-                    # Process each transaction
-                    for tx in transactions:
-                        calculator.process_transaction(tx)
-                    
-                    # Get final metrics
-                    metrics = calculator.calculate_metrics()
-                    
-                    # Only include if calculation method matches config
-                    if config.calculation_method == 'fifo':
-                        pnl_records.append(metrics)
-                    
-                    # Mark wallet as processed
-                    state_manager.create_or_update_state(
-                        task_name="silver_wallet_pnl",
-                        entity_type="wallet",
-                        entity_id=wallet_address,
-                        state="completed",
-                        metadata={
-                            "total_pnl": metrics['total_realized_pnl_usd'],
-                            "total_trades": metrics['total_trades'],
-                            "win_rate": metrics['win_rate_percent']
-                        }
-                    )
-                    
-                    # Update silver_whales table
-                    whale.pnl_processed = True
-                    whale.pnl_processed_at = datetime.utcnow()
-                    session.add(whale)
-                    session.commit()
-                    
-                    processed_wallets += 1
-                    
-                    logger.info(f"Calculated PnL for {wallet_address}: ${metrics['total_realized_pnl_usd']:.2f}")
-                    
-                except Exception as e:
-                    logger.error(f"Error processing wallet {wallet_address}: {e}")
-                    failed_wallets.append(wallet_address)
-                    
-                    state_manager.create_or_update_state(
-                        task_name="silver_wallet_pnl",
-                        entity_type="wallet",
-                        entity_id=wallet_address,
-                        state="failed",
-                        error_message=str(e)
-                    )
-                    continue
-            
-            # Store PnL records if any were processed
-            if pnl_records:
-                df = pd.DataFrame(pnl_records)
-                
-                upsert_result = upsert_dataframe(
-                    session=session,
-                    df=df,
-                    table_name="silver_wallet_pnl",
-                    schema_name="silver",
-                    primary_keys=["wallet_address"],
-                    model_class=SilverWalletPnL
+                self.state_manager.create_or_update_state(
+                    task_name=self.task_name,
+                    entity_type="wallet",
+                    entity_id=wallet_address,
+                    state="skipped",
+                    metadata={"skip_reason": "insufficient_trades", "transaction_count": len(transactions)}
                 )
+                return None
+            
+            # Calculate PnL using FIFO method
+            self.logger.info(f"Calculating PnL for wallet {wallet_address} with {len(transactions)} transactions")
+            
+            metrics = self.calculate_wallet_pnl(wallet_address, transactions)
+            
+            # Only include if calculation method matches config
+            if self.config.calculation_method != 'fifo':
+                return None
+            
+            # Mark wallet as processed
+            self.state_manager.create_or_update_state(
+                task_name=self.task_name,
+                entity_type="wallet",
+                entity_id=wallet_address,
+                state="completed",
+                metadata={
+                    "total_pnl": metrics['total_realized_pnl_usd'],
+                    "total_trades": metrics['total_trades'],
+                    "win_rate": metrics['win_rate_percent']
+                }
+            )
+            
+            # Update silver_whales table
+            whale.pnl_processed = True
+            whale.pnl_processed_at = datetime.utcnow()
+            session.add(whale)
+            session.commit()
+            
+            self.logger.info(f"Calculated PnL for {wallet_address}: ${metrics['total_realized_pnl_usd']:.2f}")
+            
+            return metrics
+            
+        except Exception as e:
+            self.logger.error(f"Error processing wallet {wallet_address}: {e}")
+            self.failed_entities.append(wallet_address)
+            
+            self.state_manager.create_or_update_state(
+                task_name=self.task_name,
+                entity_type="wallet",
+                entity_id=wallet_address,
+                state="failed",
+                error_message=str(e)
+            )
+            raise
+            
+    def execute(self) -> Dict[str, Any]:
+        """Execute the silver wallet PnL task."""
+        task_log = self.start_task_logging({"config": self.config.__dict__})
+        
+        try:
+            with get_db_session() as session:
+                # Get whales that need PnL processing
+                whales_to_process = self.get_whales_to_process(session)
                 
-                new_pnl_records += upsert_result.get('inserted', 0)
-                updated_pnl_records += upsert_result.get('updated', 0)
+                if not whales_to_process:
+                    self.logger.info("No whales need PnL processing")
+                    self.complete_task_logging(
+                        task_log, "completed",
+                        task_metrics={"reason": "no_whales_to_process"}
+                    )
+                    return {
+                        "status": "completed",
+                        "processed_wallets": 0,
+                        "new_pnl_records": 0,
+                        "message": "No wallets to process"
+                    }
                 
-                logger.info(f"Stored {len(pnl_records)} PnL records")
-        
-        # Log task completion
-        status = "completed" if not failed_wallets else "completed_with_errors"
-        
-        log_task_completion(
-            log_id=task_log.id,
-            status=status,
-            entities_processed=processed_wallets,
-            entities_failed=len(failed_wallets),
-            task_metrics={
-                "new_pnl_records": new_pnl_records,
-                "updated_pnl_records": updated_pnl_records,
-                "total_pnl_records": new_pnl_records + updated_pnl_records
-            },
-            error_summary={"failed_wallets": failed_wallets} if failed_wallets else None
-        )
-        
-        result = {
-            "status": status,
-            "processed_wallets": processed_wallets,
-            "new_pnl_records": new_pnl_records,
-            "updated_pnl_records": updated_pnl_records,
-            "total_pnl_records": new_pnl_records + updated_pnl_records,
-            "failed_wallets": failed_wallets
-        }
-        
-        logger.info(f"Silver wallet PnL task completed: {result}")
-        return result
-        
-    except Exception as e:
-        logger.error(f"Silver wallet PnL task failed: {e}")
-        
-        log_task_completion(
-            log_id=task_log.id,
-            status="failed",
-            entities_processed=processed_wallets,
-            entities_failed=len(failed_wallets),
-            error_summary={"error": str(e)}
-        )
-        
-        raise
+                self.logger.info(f"Processing {len(whales_to_process)} wallets for PnL calculation")
+                
+                # Process wallets
+                pnl_records = []
+                for whale in whales_to_process:
+                    try:
+                        metrics = self.process_wallet(session, whale)
+                        if metrics:  # Skip if insufficient trades or wrong calculation method
+                            pnl_records.append(metrics)
+                        self.processed_entities += 1
+                        
+                    except Exception as e:
+                        # Error already logged in process_wallet
+                        continue
+                
+                # Store PnL records if any were processed
+                if pnl_records:
+                    df = pd.DataFrame(pnl_records)
+                    
+                    upsert_result = self.upsert_records(
+                        session=session,
+                        df=df,
+                        model_class=SilverWalletPnL,
+                        conflict_columns=["wallet_address"],
+                        batch_size=50
+                    )
+                    
+                    self.new_records = upsert_result.get('inserted', 0)
+                    self.updated_records = upsert_result.get('updated', 0)
+                    
+                    self.logger.info(f"Stored {len(pnl_records)} PnL records")
+            
+            # Log task completion
+            status = "completed" if not self.failed_entities else "completed_with_errors"
+            
+            task_metrics = {
+                "new_pnl_records": self.new_records,
+                "updated_pnl_records": self.updated_records,
+                "total_pnl_records": self.new_records + self.updated_records
+            }
+            
+            error_summary = {"failed_wallets": self.failed_entities} if self.failed_entities else None
+            
+            self.complete_task_logging(
+                task_log, status,
+                task_metrics=task_metrics,
+                error_summary=error_summary
+            )
+            
+            result = {
+                "status": status,
+                "processed_wallets": self.processed_entities,
+                "new_pnl_records": self.new_records,
+                "updated_pnl_records": self.updated_records,
+                "total_pnl_records": self.new_records + self.updated_records,
+                "failed_wallets": self.failed_entities
+            }
+            
+            self.logger.info(f"Silver wallet PnL task completed: {result}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Silver wallet PnL task failed: {e}")
+            
+            self.complete_task_logging(
+                task_log, "failed",
+                error_summary={"error": str(e)}
+            )
+            
+            raise
+
+
+def process_silver_wallet_pnl(**context) -> Dict[str, Any]:
+    """Main entry point for the silver wallet PnL task."""
+    task = SilverWalletPnLTask(context)
+    return task.execute()

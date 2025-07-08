@@ -86,10 +86,23 @@ class DatabaseOperations:
                 for record in records:
                     cleaned_record = {}
                     for key, value in record.items():
-                        if pd.isna(value) or (isinstance(value, float) and np.isnan(value)):
+                        # Handle array/list values (don't try to check isna on them)
+                        if isinstance(value, (list, dict)):
+                            cleaned_record[key] = value
+                        elif value is None:
+                            cleaned_record[key] = None
+                        elif isinstance(value, float) and np.isnan(value):
                             cleaned_record[key] = None
                         else:
-                            cleaned_record[key] = value
+                            # For scalar values, safely check if it's NaN
+                            try:
+                                if pd.isna(value):
+                                    cleaned_record[key] = None
+                                else:
+                                    cleaned_record[key] = value
+                            except (ValueError, TypeError):
+                                # If pd.isna fails (e.g., for complex objects), just keep the value
+                                cleaned_record[key] = value
                     cleaned_records.append(cleaned_record)
                 
                 records = cleaned_records

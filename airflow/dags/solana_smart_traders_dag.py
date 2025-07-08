@@ -15,37 +15,37 @@ sys.path.append('/opt/airflow/src')
 
 def run_bronze_tokens(**context):
     """Wrapper function to import and run bronze tokens task."""
-    from tasks.bronze_tokens import process_bronze_tokens
+    from smart_trader_tasks.bronze.tokens import process_bronze_tokens
     return process_bronze_tokens(**context)
 
 def run_silver_tokens(**context):
     """Wrapper function to import and run silver tokens task."""
-    from tasks.silver_tokens import process_silver_tokens
+    from smart_trader_tasks.silver.tokens import process_silver_tokens
     return process_silver_tokens(**context)
 
 def run_bronze_whales(**context):
     """Wrapper function to import and run bronze whales task."""
-    from tasks.bronze_whales import process_bronze_whales
+    from smart_trader_tasks.bronze.whales import process_bronze_whales
     return process_bronze_whales(**context)
 
 def run_silver_whales(**context):
     """Wrapper function to import and run silver whales task."""
-    from tasks.silver_whales import process_silver_whales
+    from smart_trader_tasks.silver.whales import process_silver_whales
     return process_silver_whales(**context)
 
 def run_bronze_transactions(**context):
     """Wrapper function to import and run bronze transactions task."""
-    from tasks.bronze_transactions import process_bronze_transactions
+    from smart_trader_tasks.bronze.transactions import process_bronze_transactions
     return process_bronze_transactions(**context)
 
 def run_silver_wallet_pnl(**context):
     """Wrapper function to import and run silver wallet PnL task."""
-    from tasks.silver_wallet_pnl import process_silver_wallet_pnl
+    from smart_trader_tasks.silver.wallet_pnl import process_silver_wallet_pnl
     return process_silver_wallet_pnl(**context)
 
 def run_smart_traders(**context):
     """Wrapper function to import and run smart traders task."""
-    from tasks.smart_traders import process_smart_traders
+    from smart_trader_tasks.gold.smart_traders import process_smart_traders
     return process_smart_traders(**context)
 
 def init_database(**context):
