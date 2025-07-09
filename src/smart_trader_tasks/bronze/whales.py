@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 import time
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from sqlalchemy import select, text
 from src.models.bronze import BronzeWhale
 from src.models.silver import SilverToken
@@ -26,28 +26,41 @@ class BronzeWhalesTask(BronzeTaskBase):
         self.config = get_bronze_whales_config()
         
     def get_tokens_to_process(self, session: Any) -> List[Dict[str, str]]:
-        """Get tokens that need whale processing."""
+        """Get tokens that need whale processing, including those due for refresh."""
         try:
-            # Use raw SQL for consistency
+            # Query tokens that either haven't been processed or are due for refresh
             raw_query = text("""
-                SELECT token_address, symbol, name, whales_processed 
+                SELECT token_address, symbol, name, whales_processed, whales_processed_at
                 FROM silver.silver_tokens 
                 WHERE whales_processed = false 
+                   OR (whales_processed = true 
+                       AND whales_processed_at < NOW() - MAKE_INTERVAL(hours => :hours))
                 LIMIT :limit
             """)
-            result = session.execute(raw_query, {"limit": self.config.max_tokens_per_run})
+            result = session.execute(raw_query, {
+                "hours": self.config.refetch_interval_hours,
+                "limit": self.config.max_tokens_per_run
+            })
             tokens_data = result.fetchall()
             
             self.logger.info(f"Found {len(tokens_data)} tokens via raw SQL")
             
             tokens_to_process = []
+            refetch_count = 0
             for row in tokens_data:
                 token_dict = {
                     'token_address': row._mapping.get('token_address'),
                     'symbol': row._mapping.get('symbol') or 'unknown',
-                    'name': row._mapping.get('name') or 'unknown'
+                    'name': row._mapping.get('name') or 'unknown',
+                    'whales_processed': row._mapping.get('whales_processed', False),
+                    'whales_processed_at': row._mapping.get('whales_processed_at')
                 }
+                if token_dict['whales_processed']:
+                    refetch_count += 1
                 tokens_to_process.append(token_dict)
+            
+            if refetch_count > 0:
+                self.logger.info(f"Including {refetch_count} tokens for refetch after interval")
             
             return tokens_to_process
             
@@ -68,6 +81,14 @@ class BronzeWhalesTask(BronzeTaskBase):
         # Normalize the response using the client's method
         holders = self.birdeye_client.normalize_holders_response(whale_response)
         return holders or []
+    
+    def should_refetch_whales(self, whales_processed_at: Optional[datetime]) -> bool:
+        """Check if we need to refetch whales based on refetch interval."""
+        if not whales_processed_at:
+            return True
+            
+        hours_since_last_fetch = (datetime.utcnow() - whales_processed_at).total_seconds() / 3600
+        return hours_since_last_fetch >= self.config.refetch_interval_hours
         
     def process_token_whales(
         self, 
@@ -203,7 +224,10 @@ class BronzeWhalesTask(BronzeTaskBase):
                         "message": "No tokens to process"
                     }
                 
-                self.logger.info(f"Processing {len(tokens_to_process)} tokens for whale data")
+                # Count refetch vs new tokens
+                refetch_tokens = sum(1 for t in tokens_to_process if t.get('whales_processed', False))
+                new_tokens = len(tokens_to_process) - refetch_tokens
+                self.logger.info(f"Processing {len(tokens_to_process)} tokens for whale data ({new_tokens} new, {refetch_tokens} refetch)")
                 
                 # Process tokens in batches
                 for i in range(0, len(tokens_to_process), self.config.batch_size):
