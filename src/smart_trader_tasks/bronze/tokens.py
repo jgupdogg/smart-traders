@@ -54,13 +54,10 @@ class BronzeTokensTask(BronzeTaskBase):
             }
             
             api_call_count += 1
-            self.logger.info(f"API call #{api_call_count} - offset: {offset}, limit: {current_limit}")
             
             try:
                 response = self.birdeye_client.get_token_list(**params)
                 tokens_data = self.birdeye_client.normalize_token_list_response(response)
-                
-                self.logger.info(f"API call #{api_call_count} - received {len(tokens_data)} tokens")
                 
                 if not tokens_data:
                     self.logger.warning(f"No more tokens returned from API at offset {offset}")
@@ -121,7 +118,7 @@ class BronzeTokensTask(BronzeTaskBase):
             batch_size=self.config.batch_size
         )
         
-        self.logger.info(f"Batch UPSERT result: {upsert_result}")
+        # Batch upsert completed
         
         # Update state for processed tokens
         token_addresses = [t['token_address'] for t in tokens_batch]
@@ -161,12 +158,12 @@ class BronzeTokensTask(BronzeTaskBase):
                     batch_tokens = tokens_to_process[i:i + self.config.batch_size]
                     batch_count += 1
                     
-                    self.logger.info(f"Processing batch {batch_count}: {len(batch_tokens)} tokens")
+                    # Processing batch
                     
                     try:
                         processed_count = self.process_tokens_batch(session, batch_tokens)
                         self.processed_entities += processed_count
-                        self.logger.info(f"Batch {batch_count} completed: {processed_count} tokens processed")
+                        # Batch completed
                         
                     except Exception as e:
                         self.logger.error(f"Batch {batch_count} failed: {e}")

@@ -186,7 +186,7 @@ class WalletPnLCalculator:
         if type_swap == 'to':
             # Wallet is receiving this token (buying)
             position.add_purchase(quantity, price, timestamp, tx_hash)
-            logger.debug(f"PURCHASE: {quantity:.6f} {token_symbol} at ${price:.6f} ({side} side)")
+            # Purchase processed
             
         elif type_swap == 'from':
             # Wallet is giving up this token (selling)
@@ -204,7 +204,7 @@ class WalletPnLCalculator:
                 'side': side
             })
             
-            logger.debug(f"SALE: {quantity:.6f} {token_symbol} at ${price:.6f}, PnL: ${trade_pnl:.2f} ({side} side)")
+            # Sale processed
     
     def calculate_metrics(self) -> Dict[str, Any]:
         """Calculate comprehensive wallet metrics."""
@@ -212,9 +212,7 @@ class WalletPnLCalculator:
         active_positions = {addr: pos for addr, pos in self.positions.items() 
                           if pos.trade_count > 0 or pos.total_purchase_value > 0}
         
-        # Log position summary for debugging
-        logger.info(f"Wallet {self.wallet_address}: {len(active_positions)} active positions, "
-                   f"{len(self.trade_history)} total trades")
+        # Position summary calculated
         
         # Aggregate realized PnL from all positions
         self.total_realized_pnl = sum(pos.realized_pnl for pos in active_positions.values())
@@ -301,10 +299,7 @@ class WalletPnLCalculator:
                 sharpe_score * 0.10     # Risk-adjusted returns
             )
         
-        # Log key metrics for debugging
-        logger.info(f"Wallet {self.wallet_address} PnL Summary: "
-                   f"${self.total_realized_pnl:.2f} PnL, {win_rate:.1f}% win rate, "
-                   f"{total_trades} trades, Score: {smart_trader_score:.3f}")
+        # PnL summary calculated
         
         return {
             'wallet_address': self.wallet_address,
@@ -423,7 +418,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                 }
                 transactions.append(tx_dict)
             
-            self.logger.debug(f"Found {len(transactions)} transactions for wallet {wallet_address}")
+            # Found transactions for wallet
             return transactions
             
         except Exception as e:
@@ -460,7 +455,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             transactions = self.get_wallet_transactions(session, wallet_address)
             
             if len(transactions) < self.config.min_trades_for_calculation:
-                self.logger.info(f"Skipping wallet {wallet_address} - only {len(transactions)} transactions")
+                # Skipping wallet - insufficient transactions
                 
                 self.state_manager.create_or_update_state(
                     task_name=self.task_name,
@@ -472,7 +467,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                 return None
             
             # Calculate PnL using FIFO method
-            self.logger.info(f"Calculating PnL for wallet {wallet_address} with {len(transactions)} transactions")
+            # Calculating PnL
             
             metrics = self.calculate_wallet_pnl(wallet_address, transactions)
             
@@ -496,7 +491,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             # Update silver_whales table using raw SQL
             self._mark_whale_completed(session, wallet_address)
             
-            self.logger.info(f"Calculated PnL for {wallet_address}: ${metrics['total_realized_pnl_usd']:.2f}")
+            # Calculated PnL
             
             return metrics
             
@@ -578,7 +573,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                     self.new_records = upsert_result.get('inserted', 0)
                     self.updated_records = upsert_result.get('updated', 0)
                     
-                    self.logger.info(f"Stored {len(pnl_records)} PnL records")
+                    # Stored PnL records
             
             # Log task completion
             status = "completed" if not self.failed_entities else "partial_success"

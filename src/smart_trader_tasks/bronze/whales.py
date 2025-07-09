@@ -79,7 +79,7 @@ class BronzeWhalesTask(BronzeTaskBase):
         token_symbol = token['symbol']
         token_name = token['name']
         
-        self.logger.info(f"Processing token {token_symbol} ({token_address})")
+        # Processing token
         
         try:
             # Create/update state for this token
@@ -92,7 +92,7 @@ class BronzeWhalesTask(BronzeTaskBase):
             )
             
             # Fetch whale data from BirdEye API
-            self.logger.info(f"Fetching whale data for token {token_symbol}")
+            # Fetching whale data
             holders = self.fetch_whale_data(token_address)
             
             if not holders:
@@ -130,7 +130,7 @@ class BronzeWhalesTask(BronzeTaskBase):
                 df_grouped = df.drop_duplicates(subset=['token_address', 'wallet_address'], keep='first')
                 
                 if len(df) != len(df_grouped):
-                    self.logger.info(f"Merged {len(df)} holdings into {len(df_grouped)} unique wallet positions")
+                    # Merged holdings into unique wallet positions
                 
                 upsert_result = self.upsert_records(
                     session=session,
@@ -143,7 +143,7 @@ class BronzeWhalesTask(BronzeTaskBase):
                 self.new_records += upsert_result.get('inserted', 0)
                 self.updated_records += upsert_result.get('updated', 0)
                 
-                self.logger.info(f"Stored {len(whale_records)} whale records for token {token_symbol}")
+                # Stored whale records
             
             # Mark token as completed and mark bronze_whales as processed
             self._mark_token_completed(session, token_address, len(whale_records))
@@ -196,7 +196,7 @@ class BronzeWhalesTask(BronzeTaskBase):
             })
             session.commit()
             
-            self.logger.debug(f"Marked bronze_whales for token {token_address} as silver_processed=true")
+            # Marked bronze_whales as silver_processed
             
         except Exception as e:
             self.logger.error(f"Failed to mark bronze_whales as processed for token {token_address}: {e}")

@@ -145,7 +145,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
             
             # Check if we need to refetch
             if not self.should_refetch_transactions(whale):
-                self.logger.info(f"Skipping wallet {wallet_address} - recently fetched")
+                # Skipping wallet - recently fetched
                 
                 self.state_manager.create_or_update_state(
                     task_name=self.task_name,
@@ -157,11 +157,11 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 return 0
             
             # Fetch transaction data from BirdEye API
-            self.logger.info(f"Fetching transactions for whale {wallet_address}")
+            # Fetching transactions
             transactions = self.fetch_wallet_transactions(wallet_address)
             
             if not transactions:
-                self.logger.info(f"No transactions found for wallet {wallet_address}")
+                # No transactions found
                 # Still mark as completed since API call succeeded
                 self._mark_whale_completed(session, wallet_address, 0)
                 return 0
@@ -179,7 +179,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 df_deduped = df.drop_duplicates(subset=['transaction_hash'], keep='first')
                 
                 if len(df) != len(df_deduped):
-                    self.logger.info(f"Deduplicated {initial_count} transactions to {len(df_deduped)} unique transactions for wallet {wallet_address}")
+                    # Deduplicated transactions
                 
                 upsert_result = self.upsert_records(
                     session=session,
@@ -192,7 +192,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 self.new_records += upsert_result.get('inserted', 0)
                 self.updated_records += upsert_result.get('updated', 0)
                 
-                self.logger.info(f"Stored {len(df_deduped)} unique transactions for wallet {wallet_address}")
+                # Stored unique transactions
             
             # Mark whale as processed
             self._mark_whale_completed(session, wallet_address, len(df_deduped) if transaction_records else 0)

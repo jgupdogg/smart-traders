@@ -101,7 +101,7 @@ class SilverWhalesTask(SilverTaskBase):
             })
             session.commit()
             
-            self.logger.debug(f"Marked bronze_whales for wallet {wallet_address} as silver_processed=true")
+            # Marked bronze_whales as silver_processed
             
         except Exception as e:
             self.logger.error(f"Failed to mark bronze_whales as processed for wallet {wallet_address}: {e}")
@@ -210,7 +210,7 @@ class SilverWhalesTask(SilverTaskBase):
                     self.new_records = upsert_result.get('inserted', 0)
                     self.updated_records = upsert_result.get('updated', 0)
                     
-                    self.logger.info(f"Stored {len(whale_records)} whale records")
+                    # Stored whale records
             
             # Log task completion
             status = "completed" if not self.failed_entities else "partial_success"

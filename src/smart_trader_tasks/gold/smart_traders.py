@@ -212,7 +212,7 @@ class SmartTradersTask(GoldTaskBase):
             })
             session.commit()
             
-            self.logger.debug(f"Marked silver_wallet_pnl for wallet {wallet_address} as gold_processed=true")
+            # Marked silver_wallet_pnl as gold_processed
             
         except Exception as e:
             self.logger.error(f"Failed to mark silver_wallet_pnl as processed for wallet {wallet_address}: {e}")
@@ -255,7 +255,7 @@ class SmartTradersTask(GoldTaskBase):
                 }
             )
             
-            self.logger.info(f"Processed trader {wallet_address}: {trader_record['performance_tier']} tier, rank {rank}")
+            # Processed trader
             
             return trader_record
             
@@ -372,7 +372,7 @@ class SmartTradersTask(GoldTaskBase):
                     # Log tier distribution
                     tier_counts = df['performance_tier'].value_counts().to_dict()
                     self.logger.info(f"Tier distribution: {tier_counts}")
-                    self.logger.info(f"Stored {len(trader_records)} smart trader records")
+                    # Stored smart trader records
                 else:
                     tier_counts = {}
             

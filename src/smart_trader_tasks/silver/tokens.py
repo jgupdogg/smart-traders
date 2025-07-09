@@ -108,7 +108,7 @@ class SilverTokensTask(SilverTaskBase):
             
             session.commit()
             
-            self.logger.info(f"Marked {len(token_addresses)} bronze tokens as silver_processed=True")
+            # Marked bronze tokens as silver_processed
             
         except Exception as e:
             self.logger.error(f"Failed to mark bronze tokens as processed: {e}")
@@ -154,7 +154,7 @@ class SilverTokensTask(SilverTaskBase):
                         batch_size=self.config.batch_size
                     )
                     
-                    self.logger.info(f"Silver tokens UPSERT result: {upsert_result}")
+                    # Silver tokens UPSERT completed
                     self.new_records = upsert_result.get('inserted', 0)
                     self.updated_records = upsert_result.get('updated', 0)
                     
