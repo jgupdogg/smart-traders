@@ -56,6 +56,7 @@ class SilverTokensConfig:
     min_volume_24h: float = 50000
     selection_ratio: float = 0.2
     max_tokens_selected: int = 20
+    batch_size: int = 50
     score_weights: Dict[str, float] = field(default_factory=lambda: {
         "liquidity": 0.3,
         "volume_24h": 0.25,
@@ -83,6 +84,7 @@ class SilverWhalesConfig:
     min_total_value_usd: float = 10000
     exclude_cex_addresses: bool = True
     max_whales_selected: int = 100
+    batch_size: int = 50
     excluded_addresses: list = field(default_factory=lambda: [
         "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",  # Raydium
         "7YttLkHDoNj9wyDur5pM1ejNaAvT9X4eqaYcHQqtj2G5",  # Serum DEX
@@ -111,6 +113,7 @@ class SilverWalletPnLConfig:
     include_unrealized: bool = False
     min_trades_for_calculation: int = 5
     wallet_batch_size: int = 10
+    batch_size: int = 50
     max_processing_time_minutes: int = 60
     memory_limit_mb: int = 2048
     min_realized_pnl_usd: float = 100
@@ -124,6 +127,7 @@ class SmartTradersConfig:
     min_realized_pnl: float = 1000.0
     min_trade_count: int = 10
     min_trading_days: int = 7
+    batch_size: int = 50
     performance_tiers: Dict[str, Dict[str, float]] = field(default_factory=lambda: {
         "elite": {"min_pnl": 10000, "min_roi": 50, "min_win_rate": 70},
         "strong": {"min_pnl": 5000, "min_roi": 25, "min_win_rate": 60},

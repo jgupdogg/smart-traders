@@ -33,8 +33,11 @@ silver_tokens:
   # Selection criteria
   min_holders: 100               # Minimum number of token holders
   min_volume_24h: 50000          # $50k minimum 24-hour volume
-  selection_ratio: 0.2           # Select top 20% of bronze tokens
-  max_tokens_selected: 20        # Maximum tokens to select
+  selection_ratio: 1.0           # Select ALL tokens from query
+  max_tokens_selected: 999999    # No limit - process all tokens
+  
+  # Processing parameters
+  batch_size: 50                 # Database batch size for operations
   
   # Scoring weights
   score_weights:
@@ -47,12 +50,12 @@ silver_tokens:
 # Bronze Whales Task Configuration
 bronze_whales:
   # Whale criteria
-  top_holders_limit: 20          # Top N holders per token
+  top_holders_limit: 500         # Top N holders per token
   min_holding_percentage: 0.5    # Minimum 0.5% holding percentage
   
   # API parameters
   api_rate_limit_delay: 0.5      # Delay between API calls
-  max_tokens_per_run: 10         # Max tokens to process per run
+  max_tokens_per_run: 999999     # No limit - process ALL unprocessed tokens
   
   # Processing parameters
   batch_size: 5                  # Tokens processed per batch
@@ -64,7 +67,10 @@ silver_whales:
   min_tokens_held: 2             # Must hold at least 2 different tokens
   min_total_value_usd: 10000     # $10k minimum total holdings value
   exclude_cex_addresses: true    # Exclude known CEX addresses
-  max_whales_selected: 100       # Maximum whales to track
+  max_whales_selected: 999999    # No limit - process ALL whales
+  
+  # Processing parameters
+  batch_size: 50                 # Database batch size for operations
   
   # Known CEX addresses to exclude (partial list)
   excluded_addresses:
@@ -82,7 +88,7 @@ bronze_transactions:
   
   # Processing parameters
   batch_size: 5                       # Wallets processed per batch
-  max_wallets_per_run: 20             # Max wallets per run
+  max_wallets_per_run: 999999         # No limit - process ALL unprocessed wallets
   refetch_interval_days: 30           # Refetch transactions every 30 days
   
   # Transaction filtering
@@ -100,7 +106,8 @@ silver_wallet_pnl:
   
   # Processing parameters
   wallet_batch_size: 10               # Wallets processed per batch
-  max_processing_time_minutes: 60     # Max processing time
+  batch_size: 50                      # Database batch size for operations
+  max_processing_time_minutes: 9999   # No time limit - process ALL wallets
   memory_limit_mb: 2048               # Memory limit for processing
   
   # Performance thresholds
@@ -114,6 +121,9 @@ smart_traders:
   min_realized_pnl: 1000.0            # $1000 minimum realized PnL
   min_trade_count: 10                 # Minimum 10 trades
   min_trading_days: 7                 # Minimum 7 days of trading activity
+  
+  # Processing parameters
+  batch_size: 50                      # Database batch size for operations
   
   # Performance tiers
   performance_tiers:

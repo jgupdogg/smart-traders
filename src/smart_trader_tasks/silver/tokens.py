@@ -149,7 +149,7 @@ class SilverTokensTask(SilverTaskBase):
                         df=silver_df,
                         model_class=SilverToken,
                         conflict_columns=["token_address"],
-                        batch_size=50
+                        batch_size=self.config.batch_size
                     )
                     
                     self.logger.info(f"Silver tokens UPSERT result: {upsert_result}")

@@ -572,7 +572,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                         df=df,
                         model_class=SilverWalletPnL,
                         conflict_columns=["wallet_address"],
-                        batch_size=50
+                        batch_size=self.config.batch_size
                     )
                     
                     self.new_records = upsert_result.get('inserted', 0)
