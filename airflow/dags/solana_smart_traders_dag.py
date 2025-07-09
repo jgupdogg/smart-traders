@@ -48,6 +48,11 @@ def run_smart_traders(**context):
     from smart_trader_tasks.gold.smart_traders import process_smart_traders
     return process_smart_traders(**context)
 
+def run_helius_webhook_update(**context):
+    """Wrapper function to import and run Helius webhook update task."""
+    from smart_trader_tasks.helius_tasks import update_helius_webhook
+    return update_helius_webhook(**context)
+
 def init_database(**context):
     """Initialize database tables."""
     from database.init_tables import init_database
@@ -152,6 +157,15 @@ smart_traders_task = PythonOperator(
     execution_timeout=timedelta(minutes=15)
 )
 
+# Helius Webhook Update Task
+helius_webhook_task = PythonOperator(
+    task_id='update_helius_webhook',
+    python_callable=run_helius_webhook_update,
+    dag=dag,
+    pool='default_pool',
+    execution_timeout=timedelta(minutes=10)
+)
+
 # Pipeline completion
 pipeline_complete = DummyOperator(
     task_id='pipeline_complete',
@@ -159,7 +173,7 @@ pipeline_complete = DummyOperator(
 )
 
 # Task Dependencies - Complete pipeline flow
-start_pipeline >> init_db_task >> bronze_tokens_task >> silver_tokens_task >> bronze_whales_task >> silver_whales_task >> bronze_transactions_task >> silver_wallet_pnl_task >> smart_traders_task >> pipeline_complete
+start_pipeline >> init_db_task >> bronze_tokens_task >> silver_tokens_task >> bronze_whales_task >> silver_whales_task >> bronze_transactions_task >> silver_wallet_pnl_task >> smart_traders_task >> helius_webhook_task >> pipeline_complete
 
 # Additional task metadata
 bronze_tokens_task.doc_md = """
