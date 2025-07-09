@@ -97,6 +97,7 @@ class BronzeWhale(SQLModel, table=True):
         Index("idx_bronze_whales_wallet_address", "wallet_address"),
         Index("idx_bronze_whales_ui_amount", "ui_amount"),
         Index("idx_bronze_whales_fetched_at", "fetched_at"),
+        Index("idx_bronze_whales_silver_processed", "silver_processed"),
         {"schema": "bronze"}
     )
     
@@ -120,6 +121,10 @@ class BronzeWhale(SQLModel, table=True):
     fetched_at: datetime = Field(default_factory=datetime.utcnow, description="When data was fetched")
     batch_id: Optional[str] = Field(default=None, max_length=100, description="Batch identifier")
     data_source: str = Field(default="birdeye_v3", max_length=50, description="Data source identifier")
+    
+    # State tracking for silver layer processing
+    silver_processed: bool = Field(default=False, description="Whether processed for silver layer")
+    silver_processed_at: Optional[datetime] = Field(default=None, description="When silver processing completed")
 
 
 class BronzeTransaction(SQLModel, table=True):

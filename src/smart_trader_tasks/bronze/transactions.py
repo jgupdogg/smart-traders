@@ -8,7 +8,7 @@ import pandas as pd
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from sqlalchemy import select
+from sqlalchemy import select, text
 from src.models.bronze import BronzeTransaction
 from src.models.silver import SilverWhale
 from src.database.connection import get_db_session
@@ -25,88 +25,99 @@ class BronzeTransactionsTask(BronzeTaskBase):
         super().__init__("bronze_transactions", context)
         self.config = get_bronze_transactions_config()
         
-    def get_whales_to_process(self, session: Any) -> List[Any]:
+    def get_whales_to_process(self, session: Any) -> List[Dict[str, Any]]:
         """Get whales that need transaction processing."""
-        whales_query = select(SilverWhale).where(
-            SilverWhale.transactions_processed == False
-        ).limit(self.config.max_wallets_per_run)
+        try:
+            # Use raw SQL for consistency
+            raw_query = text("""
+                SELECT wallet_address, tokens_held_count, transactions_processed_at
+                FROM silver.silver_whales 
+                WHERE transactions_processed = false 
+                LIMIT :limit
+            """)
+            result = session.execute(raw_query, {"limit": self.config.max_wallets_per_run})
+            whales_data = result.fetchall()
+            
+            self.logger.info(f"Found {len(whales_data)} whales via raw SQL")
+            
+            whales_to_process = []
+            for row in whales_data:
+                whale_dict = {
+                    'wallet_address': row._mapping.get('wallet_address'),
+                    'tokens_held_count': row._mapping.get('tokens_held_count', 0),
+                    'transactions_processed_at': row._mapping.get('transactions_processed_at')
+                }
+                whales_to_process.append(whale_dict)
+            
+            return whales_to_process
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get whales to process: {e}")
+            raise
         
-        return list(session.exec(whales_query))
-        
-    def should_refetch_transactions(self, whale: Any) -> bool:
+    def should_refetch_transactions(self, whale: Dict[str, Any]) -> bool:
         """Check if we need to refetch transactions based on refetch interval."""
-        if not whale.transactions_processed_at:
+        transactions_processed_at = whale.get('transactions_processed_at')
+        if not transactions_processed_at:
             return True
             
-        days_since_last_fetch = (datetime.utcnow() - whale.transactions_processed_at).days
+        days_since_last_fetch = (datetime.utcnow() - transactions_processed_at).days
         return days_since_last_fetch >= self.config.refetch_interval_days
         
     def fetch_wallet_transactions(self, wallet_address: str) -> List[Dict[str, Any]]:
-        """Fetch transaction data for a wallet."""
-        # Calculate date range for transaction fetching
-        end_date = datetime.utcnow()
-        start_date = end_date - timedelta(days=self.config.lookback_days)
-        
-        transactions_data = self.birdeye_client.get_wallet_transactions(
+        """Fetch transaction data for a specific wallet using seek_by_time endpoint."""
+        transactions_data = self.birdeye_client.get_wallet_transactions_seek_by_time(
             wallet_address=wallet_address,
-            limit=self.config.max_transactions_per_wallet,
-            before=int(end_date.timestamp()),
-            after=int(start_date.timestamp())
+            limit=self.config.max_transactions_per_wallet
         )
         
         if not transactions_data.get('success', False):
             raise Exception(f"API failed: {transactions_data.get('msg', 'Unknown error')}")
         
-        return transactions_data.get('data', {}).get('items', [])
+        # Use the new normalization method
+        return self.birdeye_client.normalize_seek_by_time_response(transactions_data)
         
     def process_transactions(self, transactions: List[Dict[str, Any]], wallet_address: str) -> List[Dict[str, Any]]:
-        """Process raw transaction data into records."""
+        """Process raw transaction data into records for a specific whale."""
         transaction_records = []
         
         for tx in transactions:
             # Filter by transaction type if configured
-            tx_type = tx.get('txType', '').lower()
+            tx_type = tx.get('tx_type', '').lower()
             if self.config.include_transaction_types and tx_type not in self.config.include_transaction_types:
                 continue
             
             # Filter by minimum transaction value if configured
             tx_value = 0
-            if tx.get('base') and tx.get('base', {}).get('uiChangeAmount'):
-                base_amount = abs(tx['base']['uiChangeAmount'])
-                base_price = tx['base'].get('nearestPrice', 0)
+            if tx.get('base_ui_change_amount') and tx.get('base_nearest_price'):
+                base_amount = abs(tx['base_ui_change_amount'])
+                base_price = tx['base_nearest_price']
                 tx_value = base_amount * base_price
             
             if self.config.min_transaction_value_usd > 0 and tx_value < self.config.min_transaction_value_usd:
                 continue
             
-            # Parse transaction timestamp
-            tx_timestamp = datetime.utcfromtimestamp(tx.get('blockUnixTime', 0))
-            
-            # Extract base token info
-            base_info = tx.get('base', {})
-            quote_info = tx.get('quote', {})
-            
             transaction_record = {
-                'transaction_hash': tx.get('txHash', ''),
+                'transaction_hash': tx.get('transaction_hash', ''),
                 'whale_id': f"whale_{wallet_address}",
                 'wallet_address': wallet_address,
-                'timestamp': tx_timestamp,
+                'timestamp': tx.get('timestamp'),
                 'tx_type': tx_type,
                 'source': tx.get('source', ''),
                 
                 # Base token info
-                'base_symbol': base_info.get('symbol', ''),
-                'base_address': base_info.get('address', ''),
-                'base_type_swap': base_info.get('typeSwap', ''),
-                'base_ui_change_amount': base_info.get('uiChangeAmount', 0),
-                'base_nearest_price': base_info.get('nearestPrice', 0),
+                'base_symbol': tx.get('base_symbol', ''),
+                'base_address': tx.get('base_address', ''),
+                'base_type_swap': tx.get('base_type_swap', ''),
+                'base_ui_change_amount': tx.get('base_ui_change_amount'),
+                'base_nearest_price': tx.get('base_nearest_price'),
                 
                 # Quote token info
-                'quote_symbol': quote_info.get('symbol', ''),
-                'quote_address': quote_info.get('address', ''),
-                'quote_type_swap': quote_info.get('typeSwap', ''),
-                'quote_ui_change_amount': quote_info.get('uiChangeAmount', 0),
-                'quote_nearest_price': quote_info.get('nearestPrice', 0),
+                'quote_symbol': tx.get('quote_symbol', ''),
+                'quote_address': tx.get('quote_address', ''),
+                'quote_type_swap': tx.get('quote_type_swap', ''),
+                'quote_ui_change_amount': tx.get('quote_ui_change_amount'),
+                'quote_nearest_price': tx.get('quote_nearest_price'),
                 
                 # Metadata
                 'fetched_at': datetime.utcnow(),
@@ -117,9 +128,10 @@ class BronzeTransactionsTask(BronzeTaskBase):
         
         return transaction_records
         
-    def process_whale_transactions(self, session: Any, whale: Any) -> int:
+    def process_whale_transactions(self, session: Any, whale: Dict[str, Any]) -> int:
         """Process transactions for a single whale."""
-        wallet_address = whale.wallet_address
+        wallet_address = whale['wallet_address']
+        tokens_held_count = whale.get('tokens_held_count', 0)
         
         try:
             # Create/update state for this whale
@@ -128,7 +140,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 entity_type="whale",
                 entity_id=wallet_address,
                 state="processing",
-                metadata={"tokens_held": whale.tokens_held_count}
+                metadata={"tokens_held": tokens_held_count}
             )
             
             # Check if we need to refetch
@@ -151,19 +163,27 @@ class BronzeTransactionsTask(BronzeTaskBase):
             if not transactions:
                 self.logger.info(f"No transactions found for wallet {wallet_address}")
                 # Still mark as completed since API call succeeded
-                self._mark_whale_completed(session, whale, 0)
+                self._mark_whale_completed(session, wallet_address, 0)
                 return 0
             
             # Process transactions into records
             transaction_records = self.process_transactions(transactions, wallet_address)
             
             if transaction_records:
-                # Convert to DataFrame and upsert
+                # Convert to DataFrame
                 df = pd.DataFrame(transaction_records)
+                
+                # Deduplicate by transaction_hash, keeping the first occurrence
+                # This handles cases where a single transaction involves multiple DEX protocols
+                initial_count = len(df)
+                df_deduped = df.drop_duplicates(subset=['transaction_hash'], keep='first')
+                
+                if len(df) != len(df_deduped):
+                    self.logger.info(f"Deduplicated {initial_count} transactions to {len(df_deduped)} unique transactions for wallet {wallet_address}")
                 
                 upsert_result = self.upsert_records(
                     session=session,
-                    df=df,
+                    df=df_deduped,
                     model_class=BronzeTransaction,
                     conflict_columns=["transaction_hash"],
                     batch_size=self.config.batch_size
@@ -172,35 +192,41 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 self.new_records += upsert_result.get('inserted', 0)
                 self.updated_records += upsert_result.get('updated', 0)
                 
-                self.logger.info(f"Stored {len(transaction_records)} transactions for wallet {wallet_address}")
+                self.logger.info(f"Stored {len(df_deduped)} unique transactions for wallet {wallet_address}")
             
             # Mark whale as processed
-            self._mark_whale_completed(session, whale, len(transaction_records))
+            self._mark_whale_completed(session, wallet_address, len(df_deduped) if transaction_records else 0)
             
             # Rate limiting between wallet API calls
             time.sleep(self.config.wallet_api_delay)
             
-            return len(transaction_records)
+            return len(df_deduped) if transaction_records else 0
             
         except Exception as e:
-            self.handle_api_error(wallet_address, e, {"tokens_held": whale.tokens_held_count})
+            self.handle_api_error(wallet_address, e, {"tokens_held": tokens_held_count})
             raise
             
-    def _mark_whale_completed(self, session: Any, whale: Any, transactions_found: int):
+    def _mark_whale_completed(self, session: Any, wallet_address: str, transactions_found: int):
         """Mark whale as completed in both state and silver_whales table."""
         # Update state
         self.state_manager.create_or_update_state(
             task_name=self.task_name,
             entity_type="whale",
-            entity_id=whale.wallet_address,
+            entity_id=wallet_address,
             state="completed",
             metadata={"transactions_found": transactions_found}
         )
         
-        # Update silver_whales table
-        whale.transactions_processed = True
-        whale.transactions_processed_at = datetime.utcnow()
-        session.add(whale)
+        # Update silver_whales table using raw SQL
+        update_query = text("""
+            UPDATE silver.silver_whales 
+            SET transactions_processed = true, transactions_processed_at = :timestamp 
+            WHERE wallet_address = :wallet_address
+        """)
+        session.execute(update_query, {
+            "timestamp": datetime.utcnow(), 
+            "wallet_address": wallet_address
+        })
         session.commit()
         
     def execute(self) -> Dict[str, Any]:
@@ -237,7 +263,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                             self.processed_entities += 1
                             
                         except Exception as e:
-                            self.logger.error(f"Error processing wallet {whale.wallet_address}: {e}")
+                            self.logger.error(f"Error processing wallet {whale['wallet_address']}: {e}")
                             continue
                     
                     # Brief pause between batches
@@ -245,7 +271,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                         time.sleep(2)
             
             # Log task completion
-            status = "completed" if not self.failed_entities else "completed_with_errors"
+            status = "completed" if not self.failed_entities else "partial_success"
             
             task_metrics = {
                 "new_transactions": self.new_records,

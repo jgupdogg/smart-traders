@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, List
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from src.models.bronze import BronzeWhale
 from src.models.silver import SilverWhale
 from src.database.connection import get_db_session
@@ -25,13 +25,15 @@ class SilverWhalesTask(SilverTaskBase):
         self.config = get_silver_whales_config()
         
     def get_unique_whales(self, session: Any) -> List[Any]:
-        """Get all unique whale addresses from bronze_whales (no filters)."""
+        """Get unique whale addresses from unprocessed bronze_whales records."""
         unique_whales_query = select(
             BronzeWhale.wallet_address,
             func.count(BronzeWhale.token_address).label('tokens_held_count'),
             func.array_agg(BronzeWhale.token_address).label('token_addresses'),
             func.array_agg(BronzeWhale.token_symbol).label('token_symbols'),
             func.sum(BronzeWhale.ui_amount).label('total_tokens_held')
+        ).where(
+            BronzeWhale.silver_processed == False
         ).group_by(
             BronzeWhale.wallet_address
         )
@@ -83,6 +85,28 @@ class SilverWhalesTask(SilverTaskBase):
         }
         
         return whale_record
+    
+    def mark_bronze_whales_processed(self, session: Any, wallet_address: str):
+        """Mark bronze whale records as processed for this wallet."""
+        try:
+            # Mark all bronze_whales for this wallet as silver_processed
+            update_query = text("""
+                UPDATE bronze.bronze_whales 
+                SET silver_processed = true, silver_processed_at = :timestamp 
+                WHERE wallet_address = :wallet_address
+            """)
+            session.execute(update_query, {
+                "timestamp": datetime.utcnow(), 
+                "wallet_address": wallet_address
+            })
+            session.commit()
+            
+            self.logger.debug(f"Marked bronze_whales for wallet {wallet_address} as silver_processed=true")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to mark bronze_whales as processed for wallet {wallet_address}: {e}")
+            session.rollback()
+            raise
         
     def process_whale(self, session: Any, whale_data: Any) -> Dict[str, Any]:
         """Process a single whale."""
@@ -105,7 +129,7 @@ class SilverWhalesTask(SilverTaskBase):
             # Create whale record
             whale_record = self.create_whale_record(wallet_address, tokens_held_count, whale_details)
             
-            # Mark whale as completed
+            # Mark whale as completed and mark bronze_whales as processed
             self.state_manager.create_or_update_state(
                 task_name=self.task_name,
                 entity_type="whale",
@@ -116,6 +140,9 @@ class SilverWhalesTask(SilverTaskBase):
                     "total_value": whale_record['total_value_held']
                 }
             )
+            
+            # Mark the bronze_whales records for this wallet as processed
+            self.mark_bronze_whales_processed(session, wallet_address)
             
             return whale_record
             
@@ -138,7 +165,7 @@ class SilverWhalesTask(SilverTaskBase):
         
         try:
             with get_db_session() as session:
-                # Get ALL unique whale addresses from bronze_whales (no filters)
+                # Get unique whale addresses from unprocessed bronze_whales records
                 unique_whales_result = self.get_unique_whales(session)
                 
                 if not unique_whales_result:

@@ -1,0 +1,27 @@
+services:
+  jupyter:
+    image: jupyter/scipy-notebook:latest
+    container_name: solana-jupyter
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - JUPYTER_TOKEN=solana-smart-traders
+      - CHOWN_HOME=yes
+      - CHOWN_HOME_OPTS=-R
+      - NB_UID=1000
+      - NB_GID=1000
+    volumes:
+      - ./notebooks:/home/jovyan/work/notebooks
+      - ./src:/home/jovyan/work/src
+      - ./airflow/config:/home/jovyan/work/config
+    working_dir: /home/jovyan/work
+    command: start-notebook.sh --NotebookApp.token='solana-smart-traders' --NotebookApp.password=''
+    networks:
+      - default
+    user: root
+
+networks:
+  default:
+    name: solana_smart_traders_network
+    external: true

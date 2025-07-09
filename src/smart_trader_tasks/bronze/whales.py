@@ -99,6 +99,7 @@ class BronzeWhalesTask(BronzeTaskBase):
                 self.logger.warning(f"No holder data found for token {token_address}")
                 # Still mark as completed since API call succeeded
                 self._mark_token_completed(session, token_address, 0)
+                self._mark_bronze_whales_processed(session, token_address)
                 return 0
             
             # Process holders into records
@@ -144,8 +145,9 @@ class BronzeWhalesTask(BronzeTaskBase):
                 
                 self.logger.info(f"Stored {len(whale_records)} whale records for token {token_symbol}")
             
-            # Mark token as completed
+            # Mark token as completed and mark bronze_whales as processed
             self._mark_token_completed(session, token_address, len(whale_records))
+            self._mark_bronze_whales_processed(session, token_address)
             
             # Rate limiting
             time.sleep(self.config.api_rate_limit_delay)
@@ -178,6 +180,28 @@ class BronzeWhalesTask(BronzeTaskBase):
             "token_address": token_address
         })
         session.commit()
+        
+    def _mark_bronze_whales_processed(self, session: Any, token_address: str):
+        """Mark bronze whale records as processed for silver layer."""
+        try:
+            # Mark all bronze_whales for this token as silver_processed
+            update_query = text("""
+                UPDATE bronze.bronze_whales 
+                SET silver_processed = true, silver_processed_at = :timestamp 
+                WHERE token_address = :token_address
+            """)
+            session.execute(update_query, {
+                "timestamp": datetime.utcnow(), 
+                "token_address": token_address
+            })
+            session.commit()
+            
+            self.logger.debug(f"Marked bronze_whales for token {token_address} as silver_processed=true")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to mark bronze_whales as processed for token {token_address}: {e}")
+            session.rollback()
+            raise
         
     def execute(self) -> Dict[str, Any]:
         """Execute the bronze whales task."""

@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Any, List
-from sqlalchemy import select
+from sqlalchemy import select, text
 from src.models.silver import SilverWalletPnL
 from src.models.gold import SmartTrader
 from src.database.connection import get_db_session
@@ -24,16 +24,59 @@ class SmartTradersTask(GoldTaskBase):
         super().__init__("smart_traders", context)
         self.config = get_smart_traders_config()
         
-    def get_eligible_wallets(self, session: Any) -> List[Any]:
-        """Get all wallets that are eligible as smart traders."""
-        eligible_wallets_query = select(SilverWalletPnL).where(
-            SilverWalletPnL.smart_trader_eligible == True
-        ).order_by(
-            SilverWalletPnL.smart_trader_score.desc(),
-            SilverWalletPnL.total_realized_pnl_usd.desc()
-        )
-        
-        return list(session.exec(eligible_wallets_query))
+    def get_eligible_wallets(self, session: Any) -> List[Dict[str, Any]]:
+        """Get wallets that are eligible as smart traders and not yet processed."""
+        try:
+            # Use raw SQL to avoid SQLModel column access issues
+            raw_query = text("""
+                SELECT 
+                    wallet_address, total_realized_pnl_usd, total_unrealized_pnl_usd, 
+                    win_rate_percent, avg_win_usd, avg_loss_usd, trade_frequency_per_day,
+                    total_trades, winning_trades, losing_trades, tokens_traded_count,
+                    total_volume_usd, avg_trade_size_usd, first_trade_at, last_trade_at,
+                    trading_days, max_drawdown_percent, sharpe_ratio, smart_trader_eligible,
+                    smart_trader_score, gold_processed
+                FROM silver.silver_wallet_pnl 
+                WHERE smart_trader_eligible = true 
+                AND gold_processed = false
+                ORDER BY smart_trader_score DESC, total_realized_pnl_usd DESC
+            """)
+            result = session.execute(raw_query)
+            wallets_data = result.fetchall()
+            
+            self.logger.info(f"Found {len(wallets_data)} eligible wallets via raw SQL")
+            
+            wallets_to_process = []
+            for row in wallets_data:
+                wallet_dict = {
+                    'wallet_address': row._mapping.get('wallet_address'),
+                    'total_realized_pnl_usd': row._mapping.get('total_realized_pnl_usd'),
+                    'total_unrealized_pnl_usd': row._mapping.get('total_unrealized_pnl_usd'),
+                    'win_rate_percent': row._mapping.get('win_rate_percent'),
+                    'avg_win_usd': row._mapping.get('avg_win_usd'),
+                    'avg_loss_usd': row._mapping.get('avg_loss_usd'),
+                    'trade_frequency_per_day': row._mapping.get('trade_frequency_per_day'),
+                    'total_trades': row._mapping.get('total_trades'),
+                    'winning_trades': row._mapping.get('winning_trades'),
+                    'losing_trades': row._mapping.get('losing_trades'),
+                    'tokens_traded_count': row._mapping.get('tokens_traded_count'),
+                    'total_volume_usd': row._mapping.get('total_volume_usd'),
+                    'avg_trade_size_usd': row._mapping.get('avg_trade_size_usd'),
+                    'first_trade_at': row._mapping.get('first_trade_at'),
+                    'last_trade_at': row._mapping.get('last_trade_at'),
+                    'trading_days': row._mapping.get('trading_days'),
+                    'max_drawdown_percent': row._mapping.get('max_drawdown_percent'),
+                    'sharpe_ratio': row._mapping.get('sharpe_ratio'),
+                    'smart_trader_eligible': row._mapping.get('smart_trader_eligible'),
+                    'smart_trader_score': row._mapping.get('smart_trader_score')
+                }
+                wallets_to_process.append(wallet_dict)
+            
+            return wallets_to_process
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get eligible wallets: {e}")
+            raise
         
     def calculate_performance_tier(
         self,
@@ -75,85 +118,116 @@ class SmartTradersTask(GoldTaskBase):
             
     def create_trader_record(
         self, 
-        wallet: Any, 
+        wallet: Dict[str, Any], 
         rank: int, 
         scores: List[float], 
         pnl_values: List[float]
     ) -> Dict[str, Any]:
         """Create a trader record from wallet data."""
-        wallet_address = wallet.wallet_address
+        wallet_address = wallet['wallet_address']
         
         # Assign performance tier
         performance_tier = self.calculate_performance_tier(
-            score=wallet.smart_trader_score or 0,
-            total_pnl=wallet.total_realized_pnl_usd or 0,
-            win_rate=wallet.win_rate_percent or 0,
-            trade_count=wallet.total_trades or 0
+            score=wallet.get('smart_trader_score') or 0,
+            total_pnl=wallet.get('total_realized_pnl_usd') or 0,
+            win_rate=wallet.get('win_rate_percent') or 0,
+            trade_count=wallet.get('total_trades') or 0
         )
         
         # Calculate additional ranking metrics
         roi_percent = 0
-        if wallet.total_volume_usd and wallet.total_volume_usd > 0:
-            roi_percent = (wallet.total_realized_pnl_usd or 0) / wallet.total_volume_usd * 100
+        if wallet.get('total_volume_usd') and wallet['total_volume_usd'] > 0:
+            roi_percent = (wallet.get('total_realized_pnl_usd') or 0) / wallet['total_volume_usd'] * 100
         
         # Risk-adjusted return (simplified Sharpe ratio)
-        risk_adjusted_return = wallet.sharpe_ratio or 0
+        risk_adjusted_return = wallet.get('sharpe_ratio') or 0
         
         # Consistency score based on win rate and trade frequency
         consistency_score = 0
-        if wallet.win_rate_percent and wallet.trade_frequency_per_day:
-            consistency_score = (wallet.win_rate_percent / 100) * min(wallet.trade_frequency_per_day / 2, 1.0)
+        if wallet.get('win_rate_percent') and wallet.get('trade_frequency_per_day'):
+            consistency_score = (wallet['win_rate_percent'] / 100) * min(wallet['trade_frequency_per_day'] / 2, 1.0)
         
-        # Create trader record
+        # Calculate additional fields
+        days_since_last_trade = None
+        if wallet.get('last_trade_at'):
+            days_since_last_trade = (datetime.utcnow() - wallet['last_trade_at']).days
+        
+        # Create trader record matching SmartTrader model
         trader_record = {
             'wallet_address': wallet_address,
             'performance_tier': performance_tier,
+            'rank_in_tier': 0,  # Will be calculated after grouping by tier
             'overall_rank': rank,
-            'tier_rank': 0,  # Will be calculated after grouping by tier
-            'composite_score': wallet.smart_trader_score or 0,
-            'total_realized_pnl_usd': wallet.total_realized_pnl_usd or 0,
-            'total_unrealized_pnl_usd': wallet.total_unrealized_pnl_usd or 0,
-            'win_rate_percent': wallet.win_rate_percent or 0,
-            'total_trades': wallet.total_trades or 0,
-            'avg_trade_size_usd': wallet.avg_trade_size_usd or 0,
-            'total_volume_usd': wallet.total_volume_usd or 0,
-            'trade_frequency_per_day': wallet.trade_frequency_per_day or 0,
-            'max_drawdown_percent': wallet.max_drawdown_percent or 0,
-            'sharpe_ratio': wallet.sharpe_ratio or 0,
-            'roi_percent': roi_percent,
-            'risk_adjusted_return': risk_adjusted_return,
-            'consistency_score': consistency_score,
-            'first_trade_at': wallet.first_trade_at,
-            'last_trade_at': wallet.last_trade_at,
-            'trading_days': wallet.trading_days or 0,
-            'tokens_traded_count': wallet.tokens_traded_count or 0,
-            'identified_at': datetime.utcnow(),
+            'composite_score': wallet.get('smart_trader_score') or 0,
+            'total_realized_pnl_usd': wallet.get('total_realized_pnl_usd') or 0,
+            'total_unrealized_pnl_usd': wallet.get('total_unrealized_pnl_usd') or 0,
+            'win_rate_percent': wallet.get('win_rate_percent') or 0,
+            'total_trades': wallet.get('total_trades') or 0,
+            'roi_percentage': roi_percent,
+            'avg_trade_size_usd': wallet.get('avg_trade_size_usd') or 0,
+            'max_drawdown_percent': wallet.get('max_drawdown_percent') or 0,
+            'sharpe_ratio': wallet.get('sharpe_ratio') or 0,
+            'trade_frequency_per_day': wallet.get('trade_frequency_per_day') or 0,
+            'tokens_traded_count': wallet.get('tokens_traded_count') or 0,
+            'favorite_tokens': None,  # Would need additional analysis
+            'trading_patterns': None,  # Would need additional analysis
+            'first_trade_at': wallet.get('first_trade_at') or datetime.utcnow(),
+            'last_trade_at': wallet.get('last_trade_at') or datetime.utcnow(),
+            'trading_days': wallet.get('trading_days') or 0,
+            'days_since_last_trade': days_since_last_trade,
+            'qualification_criteria': {
+                'min_score': wallet.get('smart_trader_score') or 0,
+                'min_pnl': wallet.get('total_realized_pnl_usd') or 0,
+                'min_win_rate': wallet.get('win_rate_percent') or 0,
+                'min_trades': wallet.get('total_trades') or 0
+            },
+            'score_breakdown': {
+                'composite_score': wallet.get('smart_trader_score') or 0,
+                'pnl_score': min(max((wallet.get('total_realized_pnl_usd') or 0) / 5000, 0), 1.0),
+                'win_rate_score': min((wallet.get('win_rate_percent') or 0) / 100, 1.0),
+                'consistency_score': consistency_score
+            },
+            'selected_at': datetime.utcnow(),
             'last_updated_at': datetime.utcnow(),
-            'data_source': 'silver_wallet_pnl',
-            'analysis_period_days': (datetime.utcnow() - (wallet.first_trade_at or datetime.utcnow())).days,
-            'performance_metadata': {
-                'score_percentile': len([s for s in scores if s < (wallet.smart_trader_score or 0)]) / len(scores) * 100,
-                'pnl_percentile': len([p for p in pnl_values if p < (wallet.total_realized_pnl_usd or 0)]) / len(pnl_values) * 100,
-                'tier_criteria_met': {
-                    'min_score': wallet.smart_trader_score or 0,
-                    'min_pnl': wallet.total_realized_pnl_usd or 0,
-                    'min_win_rate': wallet.win_rate_percent or 0,
-                    'min_trades': wallet.total_trades or 0
-                }
-            }
+            'data_freshness_hours': 0,  # Assuming fresh data
+            'is_active': True,
+            'performance_declining': False,
+            'risk_score': None  # Would need additional analysis
         }
         
         return trader_record
+    
+    def mark_wallet_pnl_processed(self, session: Any, wallet_address: str):
+        """Mark silver_wallet_pnl record as processed for gold layer."""
+        try:
+            # Mark silver_wallet_pnl record as gold_processed
+            update_query = text("""
+                UPDATE silver.silver_wallet_pnl 
+                SET gold_processed = true, gold_processed_at = :timestamp 
+                WHERE wallet_address = :wallet_address
+            """)
+            session.execute(update_query, {
+                "timestamp": datetime.utcnow(), 
+                "wallet_address": wallet_address
+            })
+            session.commit()
+            
+            self.logger.debug(f"Marked silver_wallet_pnl for wallet {wallet_address} as gold_processed=true")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to mark silver_wallet_pnl as processed for wallet {wallet_address}: {e}")
+            session.rollback()
+            raise
         
     def process_trader(
         self, 
-        wallet: Any, 
+        wallet: Dict[str, Any], 
         rank: int, 
         scores: List[float], 
         pnl_values: List[float]
     ) -> Dict[str, Any]:
         """Process a single trader."""
-        wallet_address = wallet.wallet_address
+        wallet_address = wallet['wallet_address']
         
         try:
             # Create/update state for this trader
@@ -162,13 +236,13 @@ class SmartTradersTask(GoldTaskBase):
                 entity_type="trader",
                 entity_id=wallet_address,
                 state="processing",
-                metadata={"pnl": wallet.total_realized_pnl_usd, "score": wallet.smart_trader_score}
+                metadata={"pnl": wallet.get('total_realized_pnl_usd'), "score": wallet.get('smart_trader_score')}
             )
             
             # Create trader record
             trader_record = self.create_trader_record(wallet, rank, scores, pnl_values)
             
-            # Mark trader as processed
+            # Mark trader as processed and mark silver_wallet_pnl as processed
             self.state_manager.create_or_update_state(
                 task_name=self.task_name,
                 entity_type="trader",
@@ -177,7 +251,7 @@ class SmartTradersTask(GoldTaskBase):
                 metadata={
                     "tier": trader_record['performance_tier'],
                     "rank": rank,
-                    "score": wallet.smart_trader_score
+                    "score": wallet.get('smart_trader_score')
                 }
             )
             
@@ -206,7 +280,7 @@ class SmartTradersTask(GoldTaskBase):
         for tier in df['performance_tier'].unique():
             tier_mask = df['performance_tier'] == tier
             tier_df = df[tier_mask].sort_values('composite_score', ascending=False)
-            df.loc[tier_mask, 'tier_rank'] = range(1, len(tier_df) + 1)
+            df.loc[tier_mask, 'rank_in_tier'] = range(1, len(tier_df) + 1)
         
         return df.to_dict('records')
         
@@ -235,8 +309,8 @@ class SmartTradersTask(GoldTaskBase):
                 self.logger.info(f"Processing {len(eligible_wallets)} eligible smart traders")
                 
                 # Calculate percentile rankings for tier assignment
-                scores = [w.smart_trader_score for w in eligible_wallets if w.smart_trader_score is not None]
-                pnl_values = [w.total_realized_pnl_usd for w in eligible_wallets if w.total_realized_pnl_usd is not None]
+                scores = [w.get('smart_trader_score') for w in eligible_wallets if w.get('smart_trader_score') is not None]
+                pnl_values = [w.get('total_realized_pnl_usd') for w in eligible_wallets if w.get('total_realized_pnl_usd') is not None]
                 
                 if not scores or not pnl_values:
                     self.logger.warning("No valid scores or PnL values found")
@@ -286,6 +360,14 @@ class SmartTradersTask(GoldTaskBase):
                     
                     self.new_records = upsert_result.get('inserted', 0)
                     self.updated_records = upsert_result.get('updated', 0)
+                    
+                    # Mark all processed wallets as gold_processed in silver_wallet_pnl
+                    processed_wallet_addresses = [t['wallet_address'] for t in trader_records]
+                    for wallet_address in processed_wallet_addresses:
+                        try:
+                            self.mark_wallet_pnl_processed(session, wallet_address)
+                        except Exception as e:
+                            self.logger.error(f"Failed to mark wallet {wallet_address} as gold_processed: {e}")
                     
                     # Log tier distribution
                     tier_counts = df['performance_tier'].value_counts().to_dict()

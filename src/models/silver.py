@@ -85,6 +85,7 @@ class SilverWalletPnL(SQLModel, table=True):
         Index("idx_silver_wallet_pnl_trade_count", "total_trades"),
         Index("idx_silver_wallet_pnl_last_calculated", "last_calculated_at"),
         Index("idx_silver_wallet_pnl_smart_trader_eligible", "smart_trader_eligible"),
+        Index("idx_silver_wallet_pnl_gold_processed", "gold_processed"),
         {"schema": "silver"}
     )
     
@@ -128,3 +129,7 @@ class SilverWalletPnL(SQLModel, table=True):
     last_calculated_at: datetime = Field(default_factory=datetime.utcnow, description="When PnL was last calculated")
     calculation_method: str = Field(default="fifo", max_length=20, description="Method used for PnL calculation")
     tokens_analyzed: Optional[dict] = Field(default=None, sa_column=Column(JSONB), description="JSON metadata about tokens included in analysis")
+    
+    # State tracking for gold layer processing
+    gold_processed: bool = Field(default=False, description="Whether processed for gold layer")
+    gold_processed_at: Optional[datetime] = Field(default=None, description="When gold processing completed")

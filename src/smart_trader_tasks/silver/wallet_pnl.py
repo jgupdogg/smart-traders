@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Tuple
 from dataclasses import dataclass
 from collections import defaultdict
-from sqlalchemy import and_, select
+from sqlalchemy import and_, select, text
 from src.models.bronze import BronzeTransaction
 from src.models.silver import SilverWhale, SilverWalletPnL
 from src.database.connection import get_db_session
@@ -124,69 +124,121 @@ class WalletPnLCalculator:
         self.first_trade_date = None
         self.last_trade_date = None
         
-    def process_transaction(self, tx: BronzeTransaction):
-        """Process a single transaction."""
-        if not tx.base_address or not tx.base_ui_change_amount:
-            return
-            
-        token_address = tx.base_address
-        token_symbol = tx.base_symbol or token_address[:8]
+    def process_transaction(self, tx: Dict[str, Any]):
+        """Process a single transaction, handling both base and quote tokens."""
+        timestamp = tx.get('timestamp')
+        transaction_hash = tx.get('transaction_hash')
         
+        # Update trade dates
+        if timestamp:
+            if self.first_trade_date is None or timestamp < self.first_trade_date:
+                self.first_trade_date = timestamp
+            if self.last_trade_date is None or timestamp > self.last_trade_date:
+                self.last_trade_date = timestamp
+        
+        # Process base token if data is available
+        base_address = tx.get('base_address')
+        base_ui_change_amount = tx.get('base_ui_change_amount')
+        base_nearest_price = tx.get('base_nearest_price')
+        base_type_swap = tx.get('base_type_swap')
+        
+        if base_address and base_ui_change_amount and base_nearest_price and base_nearest_price > 0:
+            self._process_token_side(
+                token_address=base_address,
+                token_symbol=tx.get('base_symbol') or base_address[:8],
+                ui_change_amount=base_ui_change_amount,
+                price=base_nearest_price,
+                type_swap=base_type_swap,
+                timestamp=timestamp,
+                tx_hash=transaction_hash,
+                side='base'
+            )
+        
+        # Process quote token if data is available
+        quote_address = tx.get('quote_address')
+        quote_ui_change_amount = tx.get('quote_ui_change_amount')
+        quote_nearest_price = tx.get('quote_nearest_price')
+        quote_type_swap = tx.get('quote_type_swap')
+        
+        if quote_address and quote_ui_change_amount and quote_nearest_price and quote_nearest_price > 0:
+            self._process_token_side(
+                token_address=quote_address,
+                token_symbol=tx.get('quote_symbol') or quote_address[:8],
+                ui_change_amount=quote_ui_change_amount,
+                price=quote_nearest_price,
+                type_swap=quote_type_swap,
+                timestamp=timestamp,
+                tx_hash=transaction_hash,
+                side='quote'
+            )
+    
+    def _process_token_side(self, token_address: str, token_symbol: str, ui_change_amount: float, 
+                           price: float, type_swap: str, timestamp: datetime, tx_hash: str, side: str):
+        """Process one side of a token transaction."""
         # Initialize position if not exists
         if token_address not in self.positions:
             self.positions[token_address] = TokenPosition(token_address, token_symbol)
         
         position = self.positions[token_address]
-        quantity = abs(tx.base_ui_change_amount)
-        price = tx.base_nearest_price or 0
+        quantity = abs(ui_change_amount)
         
-        # Skip if price is invalid
-        if price <= 0:
-            return
+        # Determine if this is a buy or sell based on type_swap
+        if type_swap == 'to':
+            # Wallet is receiving this token (buying)
+            position.add_purchase(quantity, price, timestamp, tx_hash)
+            logger.debug(f"PURCHASE: {quantity:.6f} {token_symbol} at ${price:.6f} ({side} side)")
             
-        # Update trade dates
-        if self.first_trade_date is None or tx.timestamp < self.first_trade_date:
-            self.first_trade_date = tx.timestamp
-        if self.last_trade_date is None or tx.timestamp > self.last_trade_date:
-            self.last_trade_date = tx.timestamp
-        
-        # Determine if buy or sell based on typeSwap
-        if tx.base_type_swap == 'to':
-            # Buying the token
-            position.add_purchase(quantity, price, tx.timestamp, tx.transaction_hash)
-        elif tx.base_type_swap == 'from':
-            # Selling the token
-            trade_pnl = position.process_sale(quantity, price, tx.timestamp, tx.transaction_hash)
+        elif type_swap == 'from':
+            # Wallet is giving up this token (selling)
+            trade_pnl = position.process_sale(quantity, price, timestamp, tx_hash)
             
             # Record trade for history
             self.trade_history.append({
-                'timestamp': tx.timestamp,
+                'timestamp': timestamp,
                 'token_address': token_address,
                 'token_symbol': token_symbol,
                 'quantity': quantity,
                 'price': price,
                 'pnl': trade_pnl,
-                'tx_hash': tx.transaction_hash
+                'tx_hash': tx_hash,
+                'side': side
             })
+            
+            logger.debug(f"SALE: {quantity:.6f} {token_symbol} at ${price:.6f}, PnL: ${trade_pnl:.2f} ({side} side)")
     
     def calculate_metrics(self) -> Dict[str, Any]:
         """Calculate comprehensive wallet metrics."""
-        # Aggregate realized PnL from all positions
-        self.total_realized_pnl = sum(pos.realized_pnl for pos in self.positions.values())
+        # Filter out positions with no meaningful activity
+        active_positions = {addr: pos for addr, pos in self.positions.items() 
+                          if pos.trade_count > 0 or pos.total_purchase_value > 0}
         
-        # Calculate trade statistics
-        total_trades = sum(pos.trade_count for pos in self.positions.values())
-        winning_trades = sum(pos.winning_trades for pos in self.positions.values())
-        losing_trades = sum(pos.losing_trades for pos in self.positions.values())
+        # Log position summary for debugging
+        logger.info(f"Wallet {self.wallet_address}: {len(active_positions)} active positions, "
+                   f"{len(self.trade_history)} total trades")
+        
+        # Aggregate realized PnL from all positions
+        self.total_realized_pnl = sum(pos.realized_pnl for pos in active_positions.values())
+        
+        # Calculate trade statistics (only count realized trades)
+        total_trades = sum(pos.trade_count for pos in active_positions.values())
+        winning_trades = sum(pos.winning_trades for pos in active_positions.values())
+        losing_trades = sum(pos.losing_trades for pos in active_positions.values())
+        
+        # Validate trade counts
+        if winning_trades + losing_trades != total_trades:
+            logger.warning(f"Trade count mismatch: {winning_trades} + {losing_trades} != {total_trades}")
         
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
-        # Calculate average win/loss
-        winning_pnl = sum(trade['pnl'] for trade in self.trade_history if trade['pnl'] > 0)
-        losing_pnl = sum(trade['pnl'] for trade in self.trade_history if trade['pnl'] < 0)
+        # Calculate average win/loss from trade history
+        winning_trades_list = [trade for trade in self.trade_history if trade['pnl'] > 0]
+        losing_trades_list = [trade for trade in self.trade_history if trade['pnl'] < 0]
         
-        avg_win = winning_pnl / winning_trades if winning_trades > 0 else 0
-        avg_loss = abs(losing_pnl) / losing_trades if losing_trades > 0 else 0
+        winning_pnl = sum(trade['pnl'] for trade in winning_trades_list)
+        losing_pnl = sum(trade['pnl'] for trade in losing_trades_list)
+        
+        avg_win = winning_pnl / len(winning_trades_list) if winning_trades_list else 0
+        avg_loss = abs(losing_pnl) / len(losing_trades_list) if losing_trades_list else 0
         
         # Calculate trading frequency
         trading_days = 0
@@ -195,11 +247,14 @@ class WalletPnLCalculator:
         
         trade_frequency = total_trades / trading_days if trading_days > 0 else 0
         
-        # Calculate volume metrics
-        total_volume = sum(pos.total_purchase_value + pos.total_sale_value for pos in self.positions.values())
-        avg_trade_size = total_volume / total_trades if total_trades > 0 else 0
+        # Calculate volume metrics (separate buy and sell volumes)
+        total_purchase_volume = sum(pos.total_purchase_value for pos in active_positions.values())
+        total_sale_volume = sum(pos.total_sale_value for pos in active_positions.values())
+        total_volume = total_purchase_volume + total_sale_volume
         
-        # Calculate drawdown (simplified)
+        avg_trade_size = total_volume / (total_trades * 2) if total_trades > 0 else 0  # Divide by 2 since each trade has buy+sell
+        
+        # Calculate drawdown using cumulative PnL over time
         cumulative_pnl = 0
         peak_pnl = 0
         max_drawdown = 0
@@ -208,75 +263,85 @@ class WalletPnLCalculator:
             cumulative_pnl += trade['pnl']
             if cumulative_pnl > peak_pnl:
                 peak_pnl = cumulative_pnl
-            drawdown = (peak_pnl - cumulative_pnl) / peak_pnl if peak_pnl > 0 else 0
-            max_drawdown = max(max_drawdown, drawdown)
+            if peak_pnl > 0:
+                drawdown = (peak_pnl - cumulative_pnl) / peak_pnl
+                max_drawdown = max(max_drawdown, drawdown)
         
-        # Calculate Sharpe ratio (simplified)
+        # Calculate Sharpe ratio (simplified - using trade PnL as returns)
+        sharpe_ratio = 0
         if len(self.trade_history) > 1:
             returns = [trade['pnl'] for trade in self.trade_history]
             avg_return = np.mean(returns)
             std_return = np.std(returns)
             sharpe_ratio = avg_return / std_return if std_return > 0 else 0
-        else:
-            sharpe_ratio = 0
         
-        # Smart trader eligibility
+        # Enhanced smart trader eligibility
         smart_trader_eligible = (
-            total_trades >= 5 and
-            win_rate >= 50 and
-            self.total_realized_pnl > 0
+            total_trades >= 5 and  # Minimum trade count
+            win_rate >= 50 and    # Minimum win rate
+            self.total_realized_pnl > 100 and  # Minimum absolute profit
+            trading_days >= 2     # At least 2 days of activity
         )
         
-        # Calculate composite score
+        # Calculate composite score with better weighting
         smart_trader_score = 0
-        if smart_trader_eligible:
-            # Weighted score based on multiple factors
-            pnl_score = min(self.total_realized_pnl / 10000, 1.0)  # Normalize to max 1.0
-            win_rate_score = win_rate / 100
-            frequency_score = min(trade_frequency / 5, 1.0)  # Normalize to max 1.0
-            volume_score = min(total_volume / 100000, 1.0)  # Normalize to max 1.0
+        if smart_trader_eligible and total_volume > 0:
+            # Normalize scores to 0-1 range
+            pnl_score = min(max(self.total_realized_pnl / 5000, 0), 1.0)  # $5k = max score
+            win_rate_score = min(win_rate / 100, 1.0)
+            volume_score = min(total_volume / 50000, 1.0)  # $50k = max score
+            frequency_score = min(trade_frequency / 10, 1.0)  # 10 trades/day = max score
+            sharpe_score = min(max(sharpe_ratio / 3, 0), 1.0) if sharpe_ratio > 0 else 0  # 3.0 = max sharpe
             
             smart_trader_score = (
-                pnl_score * 0.3 +
-                win_rate_score * 0.25 +
-                frequency_score * 0.2 +
-                volume_score * 0.15 +
-                min(abs(sharpe_ratio) / 2, 1.0) * 0.1
+                pnl_score * 0.35 +      # Profitability is most important
+                win_rate_score * 0.25 + # Consistency matters
+                volume_score * 0.20 +   # Scale of trading
+                frequency_score * 0.10 + # Activity level
+                sharpe_score * 0.10     # Risk-adjusted returns
             )
+        
+        # Log key metrics for debugging
+        logger.info(f"Wallet {self.wallet_address} PnL Summary: "
+                   f"${self.total_realized_pnl:.2f} PnL, {win_rate:.1f}% win rate, "
+                   f"{total_trades} trades, Score: {smart_trader_score:.3f}")
         
         return {
             'wallet_address': self.wallet_address,
-            'total_realized_pnl_usd': self.total_realized_pnl,
-            'total_unrealized_pnl_usd': self.total_unrealized_pnl,
-            'win_rate_percent': win_rate,
-            'avg_win_usd': avg_win,
-            'avg_loss_usd': avg_loss,
-            'trade_frequency_per_day': trade_frequency,
-            'total_trades': total_trades,
-            'winning_trades': winning_trades,
-            'losing_trades': losing_trades,
-            'tokens_traded_count': len(self.positions),
-            'total_volume_usd': total_volume,
-            'avg_trade_size_usd': avg_trade_size,
+            'total_realized_pnl_usd': round(self.total_realized_pnl, 2),
+            'total_unrealized_pnl_usd': round(self.total_unrealized_pnl, 2),
+            'win_rate_percent': round(win_rate, 2),
+            'avg_win_usd': round(avg_win, 2),
+            'avg_loss_usd': round(avg_loss, 2),
+            'trade_frequency_per_day': round(trade_frequency, 3),
+            'total_trades': int(total_trades),
+            'winning_trades': int(winning_trades),
+            'losing_trades': int(losing_trades),
+            'tokens_traded_count': len(active_positions),
+            'total_volume_usd': round(total_volume, 2),
+            'avg_trade_size_usd': round(avg_trade_size, 2),
             'first_trade_at': self.first_trade_date,
             'last_trade_at': self.last_trade_date,
-            'trading_days': trading_days,
-            'max_drawdown_percent': max_drawdown * 100,
-            'sharpe_ratio': sharpe_ratio,
+            'trading_days': int(trading_days),
+            'max_drawdown_percent': round(max_drawdown * 100, 2),
+            'sharpe_ratio': round(sharpe_ratio, 3),
             'smart_trader_eligible': smart_trader_eligible,
-            'smart_trader_score': smart_trader_score,
+            'smart_trader_score': round(smart_trader_score, 4),
             'last_calculated_at': datetime.utcnow(),
-            'calculation_method': 'fifo',
+            'calculation_method': 'fifo_enhanced',
             'tokens_analyzed': {
-                'count': len(self.positions),
+                'count': len(active_positions),
                 'tokens': [
                     {
                         'address': pos.token_address,
                         'symbol': pos.token_symbol,
-                        'realized_pnl': pos.realized_pnl,
-                        'trade_count': pos.trade_count
+                        'realized_pnl': round(pos.realized_pnl, 2),
+                        'trade_count': pos.trade_count,
+                        'purchase_volume': round(pos.total_purchase_value, 2),
+                        'sale_volume': round(pos.total_sale_value, 2)
                     }
-                    for pos in self.positions.values()
+                    for pos in active_positions.values()
+                    if pos.trade_count > 0 or abs(pos.realized_pnl) > 1  # Only include meaningful positions
                 ]
             }
         }
@@ -289,24 +354,81 @@ class SilverWalletPnLTask(SilverTaskBase):
         super().__init__("silver_wallet_pnl", context)
         self.config = get_silver_wallet_pnl_config()
         
-    def get_whales_to_process(self, session: Any) -> List[Any]:
+    def get_whales_to_process(self, session: Any) -> List[Dict[str, Any]]:
         """Get whales that need PnL processing."""
-        whales_query = select(SilverWhale).where(
-            and_(
-                SilverWhale.pnl_processed == False,
-                SilverWhale.transactions_processed == True
-            )
-        )
+        try:
+            # Use raw SQL for consistency
+            raw_query = text("""
+                SELECT wallet_address, tokens_held_count, pnl_processed_at, transactions_processed_at
+                FROM silver.silver_whales 
+                WHERE pnl_processed = false 
+                AND transactions_processed = true
+                LIMIT :limit
+            """)
+            result = session.execute(raw_query, {"limit": self.config.wallet_batch_size})
+            whales_data = result.fetchall()
+            
+            self.logger.info(f"Found {len(whales_data)} whales via raw SQL")
+            
+            whales_to_process = []
+            for row in whales_data:
+                whale_dict = {
+                    'wallet_address': row._mapping.get('wallet_address'),
+                    'tokens_held_count': row._mapping.get('tokens_held_count', 0),
+                    'pnl_processed_at': row._mapping.get('pnl_processed_at'),
+                    'transactions_processed_at': row._mapping.get('transactions_processed_at')
+                }
+                whales_to_process.append(whale_dict)
+            
+            return whales_to_process
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get whales to process: {e}")
+            raise
         
-        return list(session.exec(whales_query))
-        
-    def get_wallet_transactions(self, session: Any, wallet_address: str) -> List[Any]:
+    def get_wallet_transactions(self, session: Any, wallet_address: str) -> List[Dict[str, Any]]:
         """Get all transactions for a wallet."""
-        transactions_query = select(BronzeTransaction).where(
-            BronzeTransaction.wallet_address == wallet_address
-        ).order_by(BronzeTransaction.timestamp)
-        
-        return list(session.exec(transactions_query))
+        try:
+            # Use raw SQL to avoid SQLModel column access issues
+            raw_query = text("""
+                SELECT 
+                    transaction_hash, wallet_address, timestamp, tx_type, source,
+                    base_symbol, base_address, base_type_swap, base_ui_change_amount, base_nearest_price,
+                    quote_symbol, quote_address, quote_type_swap, quote_ui_change_amount, quote_nearest_price
+                FROM bronze.bronze_transactions 
+                WHERE wallet_address = :wallet_address
+                ORDER BY timestamp ASC
+            """)
+            result = session.execute(raw_query, {"wallet_address": wallet_address})
+            transactions_data = result.fetchall()
+            
+            transactions = []
+            for row in transactions_data:
+                tx_dict = {
+                    'transaction_hash': row._mapping.get('transaction_hash'),
+                    'wallet_address': row._mapping.get('wallet_address'),
+                    'timestamp': row._mapping.get('timestamp'),
+                    'tx_type': row._mapping.get('tx_type'),
+                    'source': row._mapping.get('source'),
+                    'base_symbol': row._mapping.get('base_symbol'),
+                    'base_address': row._mapping.get('base_address'),
+                    'base_type_swap': row._mapping.get('base_type_swap'),
+                    'base_ui_change_amount': row._mapping.get('base_ui_change_amount'),
+                    'base_nearest_price': row._mapping.get('base_nearest_price'),
+                    'quote_symbol': row._mapping.get('quote_symbol'),
+                    'quote_address': row._mapping.get('quote_address'),
+                    'quote_type_swap': row._mapping.get('quote_type_swap'),
+                    'quote_ui_change_amount': row._mapping.get('quote_ui_change_amount'),
+                    'quote_nearest_price': row._mapping.get('quote_nearest_price')
+                }
+                transactions.append(tx_dict)
+            
+            self.logger.debug(f"Found {len(transactions)} transactions for wallet {wallet_address}")
+            return transactions
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get transactions for wallet {wallet_address}: {e}")
+            raise
         
     def calculate_wallet_pnl(self, wallet_address: str, transactions: List[Any]) -> Dict[str, Any]:
         """Calculate PnL for a wallet using FIFO method."""
@@ -319,9 +441,10 @@ class SilverWalletPnLTask(SilverTaskBase):
         # Get final metrics
         return calculator.calculate_metrics()
         
-    def process_wallet(self, session: Any, whale: Any) -> Dict[str, Any]:
+    def process_wallet(self, session: Any, whale: Dict[str, Any]) -> Dict[str, Any]:
         """Process PnL for a single wallet."""
-        wallet_address = whale.wallet_address
+        wallet_address = whale['wallet_address']
+        tokens_held_count = whale.get('tokens_held_count', 0)
         
         try:
             # Create/update state for this wallet
@@ -330,7 +453,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                 entity_type="wallet",
                 entity_id=wallet_address,
                 state="processing",
-                metadata={"tokens_held": whale.tokens_held_count}
+                metadata={"tokens_held": tokens_held_count}
             )
             
             # Get all transactions for this wallet
@@ -353,8 +476,8 @@ class SilverWalletPnLTask(SilverTaskBase):
             
             metrics = self.calculate_wallet_pnl(wallet_address, transactions)
             
-            # Only include if calculation method matches config
-            if self.config.calculation_method != 'fifo':
+            # Only include if calculation method matches config (allow both fifo and fifo_enhanced)
+            if self.config.calculation_method not in ['fifo', 'fifo_enhanced']:
                 return None
             
             # Mark wallet as processed
@@ -370,11 +493,8 @@ class SilverWalletPnLTask(SilverTaskBase):
                 }
             )
             
-            # Update silver_whales table
-            whale.pnl_processed = True
-            whale.pnl_processed_at = datetime.utcnow()
-            session.add(whale)
-            session.commit()
+            # Update silver_whales table using raw SQL
+            self._mark_whale_completed(session, wallet_address)
             
             self.logger.info(f"Calculated PnL for {wallet_address}: ${metrics['total_realized_pnl_usd']:.2f}")
             
@@ -392,6 +512,19 @@ class SilverWalletPnLTask(SilverTaskBase):
                 error_message=str(e)
             )
             raise
+    
+    def _mark_whale_completed(self, session: Any, wallet_address: str):
+        """Mark whale as completed in silver_whales table."""
+        update_query = text("""
+            UPDATE silver.silver_whales 
+            SET pnl_processed = true, pnl_processed_at = :timestamp 
+            WHERE wallet_address = :wallet_address
+        """)
+        session.execute(update_query, {
+            "timestamp": datetime.utcnow(), 
+            "wallet_address": wallet_address
+        })
+        session.commit()
             
     def execute(self) -> Dict[str, Any]:
         """Execute the silver wallet PnL task."""
@@ -448,7 +581,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                     self.logger.info(f"Stored {len(pnl_records)} PnL records")
             
             # Log task completion
-            status = "completed" if not self.failed_entities else "completed_with_errors"
+            status = "completed" if not self.failed_entities else "partial_success"
             
             task_metrics = {
                 "new_pnl_records": self.new_records,

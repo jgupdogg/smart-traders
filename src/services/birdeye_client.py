@@ -6,6 +6,7 @@ Provides access to token data, holder information, and transaction data.
 import time
 import logging
 import requests
+from datetime import datetime
 from typing import Dict, Any, List, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -188,6 +189,31 @@ class BirdEyeAPIClient:
         
         logger.debug(f"Getting transactions for wallet {wallet_address}")
         return self._make_request("/trader/tx", params)
+    
+    def get_wallet_transactions_seek_by_time(
+        self,
+        wallet_address: str,
+        offset: int = 0,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """Get transaction history for a specific wallet using seek_by_time endpoint.
+        
+        Args:
+            wallet_address: Wallet address to get transactions for
+            offset: Number of records to skip
+            limit: Maximum number of transactions to return
+            
+        Returns:
+            API response with transaction data
+        """
+        params = {
+            "offset": offset,
+            "limit": limit,
+            "address": wallet_address  # Add wallet address as address parameter
+        }
+        
+        logger.debug(f"Getting transactions for wallet {wallet_address} with seek_by_time, offset={offset}, limit={limit}")
+        return self._make_request("/trader/txs/seek_by_time", params)
     
     def get_token_price(self, token_address: str) -> Dict[str, Any]:
         """Get current price for a token.
@@ -407,6 +433,69 @@ class BirdEyeAPIClient:
                 continue
         
         logger.info(f"Normalized {len(normalized_transactions)} transactions from response")
+        return normalized_transactions
+    
+    def normalize_seek_by_time_response(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Normalize seek_by_time transactions response to consistent format.
+        
+        Args:
+            response: Raw API response from /trader/txs/seek_by_time
+            
+        Returns:
+            List of normalized transaction dictionaries
+        """
+        if not response.get('success', True) or 'data' not in response:
+            logger.warning(f"Invalid seek_by_time response format: {response}")
+            return []
+        
+        data = response['data']
+        transactions = data.get('items', [])
+        
+        if not transactions:
+            logger.warning("No transactions found in seek_by_time response")
+            return []
+        
+        normalized_transactions = []
+        for transaction in transactions:
+            try:
+                base = transaction.get('base', {})
+                quote = transaction.get('quote', {})
+                
+                # Convert block_unix_time to datetime
+                timestamp = None
+                if transaction.get('block_unix_time'):
+                    from datetime import timezone
+                    timestamp = datetime.fromtimestamp(transaction['block_unix_time'], timezone.utc)
+                
+                normalized_transaction = {
+                    "transaction_hash": str(transaction.get('tx_hash', '')),
+                    "wallet_address": str(transaction.get('owner', '')),
+                    "timestamp": timestamp,
+                    "tx_type": transaction.get('tx_type'),
+                    "source": transaction.get('source'),
+                    "base_symbol": base.get('symbol'),
+                    "base_address": base.get('address'),
+                    "base_type_swap": base.get('type_swap'),
+                    "base_ui_change_amount": float(base.get('ui_change_amount', 0)) if base.get('ui_change_amount') is not None else None,
+                    "base_nearest_price": float(base.get('nearest_price', 0)) if base.get('nearest_price') is not None else None,
+                    "quote_symbol": quote.get('symbol'),
+                    "quote_address": quote.get('address'),
+                    "quote_type_swap": quote.get('type_swap'),
+                    "quote_ui_change_amount": float(quote.get('ui_change_amount', 0)) if quote.get('ui_change_amount') is not None else None,
+                    "quote_nearest_price": float(quote.get('nearest_price', 0)) if quote.get('nearest_price') is not None else None
+                }
+                
+                # Only add transactions with valid hashes and wallet addresses
+                if normalized_transaction["transaction_hash"] and normalized_transaction["wallet_address"]:
+                    normalized_transactions.append(normalized_transaction)
+                else:
+                    logger.warning(f"Skipping transaction with invalid hash or wallet: {transaction}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to normalize seek_by_time transaction data: {e}, transaction: {transaction}")
+                continue
+        
+        logger.info(f"Normalized {len(normalized_transactions)} transactions from seek_by_time response")
         return normalized_transactions
 
 
