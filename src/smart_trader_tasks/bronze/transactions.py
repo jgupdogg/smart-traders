@@ -180,6 +180,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 
                 if len(df) != len(df_deduped):
                     # Deduplicated transactions
+                    pass
                 
                 upsert_result = self.upsert_records(
                     session=session,

@@ -131,6 +131,7 @@ class BronzeWhalesTask(BronzeTaskBase):
                 
                 if len(df) != len(df_grouped):
                     # Merged holdings into unique wallet positions
+                    pass
                 
                 upsert_result = self.upsert_records(
                     session=session,
