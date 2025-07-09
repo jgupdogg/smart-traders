@@ -50,7 +50,7 @@ silver_tokens:
 # Bronze Whales Task Configuration
 bronze_whales:
   # Whale criteria
-  top_holders_limit: 500         # Top N holders per token
+  top_holders_limit: 100         # Top N holders per token
   min_holding_percentage: 0.5    # Minimum 0.5% holding percentage
   
   # API parameters

@@ -12,6 +12,7 @@ from src.models.bronze import BronzeToken
 from src.models.silver import SilverToken
 from src.database.connection import get_db_session
 from smart_trader_tasks.common import SilverTaskBase, safe_value
+from src.config.settings import get_silver_tokens_config
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class SilverTokensTask(SilverTaskBase):
     
     def __init__(self, context: Dict[str, Any]):
         super().__init__("silver_tokens", context)
+        self.config = get_silver_tokens_config()
         
     def get_unprocessed_bronze_tokens(self, session: Any) -> List[Dict[str, Any]]:
         """Get unprocessed bronze tokens."""
