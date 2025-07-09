@@ -10,6 +10,7 @@ from typing import Dict, Any, List
 from sqlalchemy import select, func, text
 from src.models.bronze import BronzeWhale
 from src.models.silver import SilverWhale
+from sqlalchemy import exists
 from src.database.connection import get_db_session
 from src.config.settings import get_silver_whales_config
 from smart_trader_tasks.common import SilverTaskBase
@@ -51,7 +52,8 @@ class SilverWhalesTask(SilverTaskBase):
         self, 
         wallet_address: str, 
         tokens_held_count: int, 
-        whale_details: List[Any]
+        whale_details: List[Any],
+        is_new_whale: bool = True
     ) -> Dict[str, Any]:
         """Create a whale record from the aggregated data."""
         # Calculate total value held (approximate using ui_amount)
@@ -70,17 +72,17 @@ class SilverWhalesTask(SilverTaskBase):
                 "rank": getattr(detail, 'rank', 0)
             })
         
-        # No filtering - process all whales
+        # Only set processing state for NEW whales
         whale_record = {
             'wallet_address': wallet_address,
             'tokens_held_count': tokens_held_count,
             'total_value_held': total_value_held,
-            'first_seen_at': datetime.utcnow(),
+            'first_seen_at': datetime.utcnow() if is_new_whale else None,
             'last_updated_at': datetime.utcnow(),
-            'transactions_processed': False,
-            'transactions_processed_at': None,
-            'pnl_processed': False,
-            'pnl_processed_at': None,
+            'transactions_processed': False if is_new_whale else None,
+            'transactions_processed_at': None if is_new_whale else None,
+            'pnl_processed': False if is_new_whale else None,
+            'pnl_processed_at': None if is_new_whale else None,
             'source_tokens': source_tokens
         }
         
@@ -114,20 +116,26 @@ class SilverWhalesTask(SilverTaskBase):
         tokens_held_count = whale_data.tokens_held_count
         
         try:
+            # Check if this whale already exists
+            existing_whale = session.query(SilverWhale).filter(
+                SilverWhale.wallet_address == wallet_address
+            ).first()
+            is_new_whale = existing_whale is None
+            
             # Create state for this whale
             self.state_manager.create_or_update_state(
                 task_name=self.task_name,
                 entity_type="whale",
                 entity_id=wallet_address,
                 state="processing",
-                metadata={"tokens_held": tokens_held_count}
+                metadata={"tokens_held": tokens_held_count, "is_new": is_new_whale}
             )
             
             # Get detailed whale data from bronze_whales for this address
             whale_details = self.get_whale_details(session, wallet_address)
             
             # Create whale record
-            whale_record = self.create_whale_record(wallet_address, tokens_held_count, whale_details)
+            whale_record = self.create_whale_record(wallet_address, tokens_held_count, whale_details, is_new_whale)
             
             # Mark whale as completed and mark bronze_whales as processed
             self.state_manager.create_or_update_state(
@@ -199,11 +207,30 @@ class SilverWhalesTask(SilverTaskBase):
                 if whale_records:
                     df = pd.DataFrame(whale_records)
                     
+                    # Handle None values in processing state fields for new records
+                    df.loc[df['transactions_processed'].isna(), 'transactions_processed'] = False
+                    df.loc[df['transactions_processed_at'].isna(), 'transactions_processed_at'] = None
+                    df.loc[df['pnl_processed'].isna(), 'pnl_processed'] = False
+                    df.loc[df['pnl_processed_at'].isna(), 'pnl_processed_at'] = None
+                    df.loc[df['first_seen_at'].isna(), 'first_seen_at'] = datetime.utcnow()
+                    
+                    # Count new vs updated whales
+                    new_whales = len([r for r in whale_records if r.get('transactions_processed') is not None])
+                    updated_whales = len(whale_records) - new_whales
+                    
+                    self.logger.info(f"Processing {new_whales} new whales, {updated_whales} updated whales (preserving processing state)")
+                    
+                    # Define columns to update during conflict (exclude processing state fields)
+                    update_columns = [
+                        'tokens_held_count', 'total_value_held', 'last_updated_at', 'source_tokens'
+                    ]
+                    
                     upsert_result = self.upsert_records(
                         session=session,
                         df=df,
                         model_class=SilverWhale,
                         conflict_columns=["wallet_address"],
+                        update_columns=update_columns,
                         batch_size=self.config.batch_size
                     )
                     

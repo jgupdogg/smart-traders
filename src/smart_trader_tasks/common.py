@@ -135,6 +135,7 @@ class TaskBase(ABC):
         df: pd.DataFrame,
         model_class: Type[SQLModel],
         conflict_columns: List[str],
+        update_columns: Optional[List[str]] = None,
         batch_size: int = 50
     ) -> Dict[str, Any]:
         """
@@ -145,6 +146,7 @@ class TaskBase(ABC):
             df: DataFrame to upsert
             model_class: SQLModel class for target table
             conflict_columns: Columns for conflict detection
+            update_columns: Columns to update on conflict (optional)
             batch_size: Batch size for processing
             
         Returns:
@@ -158,6 +160,7 @@ class TaskBase(ABC):
             df=clean_df,
             model_class=model_class,
             conflict_columns=conflict_columns,
+            update_columns=update_columns,
             batch_size=batch_size
         )
         

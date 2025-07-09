@@ -30,7 +30,7 @@ class BronzeWhalesTask(BronzeTaskBase):
         try:
             # Query tokens that either haven't been processed or are due for refresh
             raw_query = text("""
-                SELECT token_address, symbol, name, whales_processed, whales_processed_at
+                SELECT token_address, symbol, name, holder_count, whales_processed, whales_processed_at
                 FROM silver.silver_tokens 
                 WHERE whales_processed = false 
                    OR (whales_processed = true 
@@ -52,6 +52,7 @@ class BronzeWhalesTask(BronzeTaskBase):
                     'token_address': row._mapping.get('token_address'),
                     'symbol': row._mapping.get('symbol') or 'unknown',
                     'name': row._mapping.get('name') or 'unknown',
+                    'holder_count': row._mapping.get('holder_count'),
                     'whales_processed': row._mapping.get('whales_processed', False),
                     'whales_processed_at': row._mapping.get('whales_processed_at')
                 }
@@ -68,11 +69,31 @@ class BronzeWhalesTask(BronzeTaskBase):
             self.logger.error(f"Failed to get tokens to process: {e}")
             raise
             
-    def fetch_whale_data(self, token_address: str) -> List[Dict[str, Any]]:
-        """Fetch whale data for a single token."""
+    def fetch_whale_data(self, token_address: str, holder_count: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Fetch whale data for a single token, skipping top holders."""
+        # Calculate offset to skip top percentage of holders
+        offset = 0
+        limit = self.config.holders_per_token
+        
+        if holder_count and holder_count > 0:
+            # Skip top percentage of holders (exchanges, protocols, etc.)
+            skip_count = int(holder_count * (self.config.skip_top_percentage / 100.0))
+            offset = skip_count
+            
+            # Ensure we don't exceed total holders
+            if offset + limit > holder_count:
+                limit = max(1, holder_count - offset)
+            
+            self.logger.info(f"Token {token_address}: {holder_count} holders, skipping top {skip_count} ({self.config.skip_top_percentage}%), fetching holders {offset+1}-{offset+limit}")
+        else:
+            # No holder count available, use legacy approach
+            self.logger.warning(f"Token {token_address}: No holder count available, using legacy top holders approach")
+            limit = self.config.top_holders_limit
+        
         whale_response = self.birdeye_client.get_token_holders(
             token_address=token_address,
-            limit=self.config.top_holders_limit
+            limit=limit,
+            offset=offset
         )
         
         if not whale_response.get('success', False):
@@ -99,6 +120,7 @@ class BronzeWhalesTask(BronzeTaskBase):
         token_address = token['token_address']
         token_symbol = token['symbol']
         token_name = token['name']
+        holder_count = token.get('holder_count')
         
         # Processing token
         
@@ -109,12 +131,12 @@ class BronzeWhalesTask(BronzeTaskBase):
                 entity_type="token",
                 entity_id=token_address,
                 state="processing",
-                metadata={"token_symbol": token_symbol}
+                metadata={"token_symbol": token_symbol, "holder_count": holder_count}
             )
             
             # Fetch whale data from BirdEye API
             # Fetching whale data
-            holders = self.fetch_whale_data(token_address)
+            holders = self.fetch_whale_data(token_address, holder_count)
             
             if not holders:
                 self.logger.warning(f"No holder data found for token {token_address}")
@@ -123,9 +145,21 @@ class BronzeWhalesTask(BronzeTaskBase):
                 self._mark_bronze_whales_processed(session, token_address)
                 return 0
             
+            # Get existing whale records to preserve state
+            existing_whales = set()
+            if holders:
+                existing_query = session.query(BronzeWhale.token_address, BronzeWhale.wallet_address).filter(
+                    BronzeWhale.token_address == token_address,
+                    BronzeWhale.wallet_address.in_([h['wallet_address'] for h in holders])
+                )
+                existing_whales = {(row[0], row[1]) for row in existing_query.all()}
+
             # Process holders into records
             whale_records = []
             for holder in holders:
+                whale_key = (token_address, holder['wallet_address'])
+                is_existing = whale_key in existing_whales
+                
                 whale_record = {
                     'token_address': token_address,
                     'wallet_address': holder['wallet_address'],
@@ -139,13 +173,20 @@ class BronzeWhalesTask(BronzeTaskBase):
                     'token_account': holder['token_account'],
                     'fetched_at': datetime.utcnow(),
                     'batch_id': self.run_id,
-                    'data_source': 'birdeye_v3'
+                    'data_source': 'birdeye_v3',
+                    # Only set processing state for NEW whales
+                    'silver_processed': False if not is_existing else None,
+                    'silver_processed_at': None if not is_existing else None
                 }
                 whale_records.append(whale_record)
             
             if whale_records:
                 # Convert to DataFrame
                 df = pd.DataFrame(whale_records)
+                
+                # Handle None values in processing state fields for new records
+                df.loc[df['silver_processed'].isna(), 'silver_processed'] = False
+                df.loc[df['silver_processed_at'].isna(), 'silver_processed_at'] = None
                 
                 # Deduplicate by token_address + wallet_address, keeping the best rank
                 df_grouped = df.drop_duplicates(subset=['token_address', 'wallet_address'], keep='first')
@@ -154,11 +195,24 @@ class BronzeWhalesTask(BronzeTaskBase):
                     # Merged holdings into unique wallet positions
                     pass
                 
+                # Calculate new vs updated whales
+                new_whales = len([r for r in whale_records if not r.get('silver_processed') is None])
+                updated_whales = len(whale_records) - new_whales
+                
+                self.logger.info(f"Token {token_address}: {new_whales} new whales, {updated_whales} updated whales (preserving processing state)")
+                
+                # Define columns to update during conflict (exclude processing state fields)
+                update_columns = [
+                    'token_symbol', 'token_name', 'rank', 'amount', 'ui_amount', 
+                    'decimals', 'mint', 'token_account', 'fetched_at', 'batch_id', 'data_source'
+                ]
+                
                 upsert_result = self.upsert_records(
                     session=session,
                     df=df_grouped,
                     model_class=BronzeWhale,
                     conflict_columns=["token_address", "wallet_address"],
+                    update_columns=update_columns,
                     batch_size=self.config.batch_size
                 )
                 

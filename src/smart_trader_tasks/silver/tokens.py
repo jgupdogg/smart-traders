@@ -61,9 +61,19 @@ class SilverTokensTask(SilverTaskBase):
         # Process all bronze tokens without filtering (simplified approach)
         self.logger.info("Processing all bronze tokens without filtering...")
         
+        # Get existing silver tokens to preserve state
+        with get_db_session() as session:
+            existing_tokens = session.query(SilverToken.token_address).filter(
+                SilverToken.token_address.in_(df['token_address'].tolist())
+            ).all()
+            existing_token_addresses = {row[0] for row in existing_tokens}
+        
         # Prepare silver tokens data with simple structure
         silver_tokens_data = []
         for _, token in df.iterrows():
+            token_address = safe_value(token['token_address'])
+            is_new_token = token_address not in existing_token_addresses
+            
             # Convert holder to int if it's not None and not NaN
             holder_count = token['holder']
             if holder_count is not None and not pd.isna(holder_count) and isinstance(holder_count, float):
@@ -72,15 +82,16 @@ class SilverTokensTask(SilverTaskBase):
                 holder_count = None
             
             silver_token = {
-                'token_address': safe_value(token['token_address']),
+                'token_address': token_address,
                 'selection_score': 1.0,  # Simple default score
                 'selection_reason': {
                     'selection_criteria': 'all_bronze_tokens',
                     'rank': len(silver_tokens_data) + 1
                 },
-                'selected_at': datetime.utcnow(),
-                'whales_processed': False,
-                'whales_processed_at': None,
+                'selected_at': datetime.utcnow() if is_new_token else None,
+                # Only set processing state for NEW tokens
+                'whales_processed': False if is_new_token else None,
+                'whales_processed_at': None if is_new_token else None,
                 # Denormalized data with safe value conversion
                 'symbol': safe_value(token['symbol']),
                 'name': safe_value(token['name']),
@@ -146,11 +157,18 @@ class SilverTokensTask(SilverTaskBase):
                 if silver_tokens_data:
                     silver_df = pd.DataFrame(silver_tokens_data)
                     
+                    # Define columns to update during conflict (exclude processing state fields)
+                    update_columns = [
+                        'selection_score', 'selection_reason', 'symbol', 'name', 'market_cap', 
+                        'price_change_24h_percent', 'volume_24h_usd', 'liquidity', 'holder_count', 'price'
+                    ]
+                    
                     upsert_result = self.upsert_records(
                         session=session,
                         df=silver_df,
                         model_class=SilverToken,
                         conflict_columns=["token_address"],
+                        update_columns=update_columns,
                         batch_size=self.config.batch_size
                     )
                     

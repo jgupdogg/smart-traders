@@ -69,7 +69,9 @@ class SilverTokensConfig:
 @dataclass
 class BronzeWhalesConfig:
     """Bronze whales task configuration."""
-    top_holders_limit: int = 20
+    top_holders_limit: int = 20  # Legacy - kept for compatibility
+    skip_top_percentage: float = 10.0  # Skip top 10% of holders (exchanges/protocols)
+    holders_per_token: int = 1000  # Number of middle-tier holders to fetch
     min_holding_percentage: float = 0.5
     api_rate_limit_delay: float = 0.5
     max_tokens_per_run: int = 10
@@ -100,7 +102,7 @@ class BronzeTransactionsConfig:
     lookback_days: int = 30
     wallet_api_delay: float = 1.0
     batch_size: int = 5
-    max_wallets_per_run: int = 20
+    max_wallets_per_run: int = 100  # Increased from 20 to 100
     refetch_interval_days: int = 30
     min_transaction_value_usd: float = 100
     include_transaction_types: list = field(default_factory=lambda: ["swap", "transfer"])

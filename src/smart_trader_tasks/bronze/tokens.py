@@ -87,13 +87,6 @@ class BronzeTokensTask(BronzeTaskBase):
         # Convert to DataFrame
         df = pd.DataFrame(tokens_batch)
         
-        # Add metadata columns
-        df['ingested_at'] = datetime.utcnow()
-        df['silver_processed'] = False
-        df['silver_processed_at'] = None
-        df['batch_id'] = self.run_id
-        df['processing_date'] = datetime.utcnow().date()
-        
         # Get existing tokens to track new vs updated
         existing_addresses = []
         if tokens_batch:
@@ -109,12 +102,42 @@ class BronzeTokensTask(BronzeTaskBase):
         self.new_records += batch_new
         self.updated_records += batch_updated
         
-        # Perform UPSERT operation
+        # Add metadata columns
+        df['ingested_at'] = datetime.utcnow()
+        df['batch_id'] = self.run_id
+        df['processing_date'] = datetime.utcnow().date()
+        
+        # Only set processing state fields for NEW records
+        # For existing records, these fields will be preserved during update
+        df['silver_processed'] = df['token_address'].apply(lambda x: False if x not in existing_addresses else None)
+        df['silver_processed_at'] = df['token_address'].apply(lambda x: None if x not in existing_addresses else None)
+        
+        # Define columns to update during conflict (exclude processing state fields)
+        update_columns = [
+            'logo_uri', 'name', 'symbol', 'decimals', 'market_cap', 'fdv', 'liquidity',
+            'last_trade_unix_time', 'volume_1h_usd', 'volume_1h_change_percent',
+            'volume_2h_usd', 'volume_2h_change_percent', 'volume_4h_usd', 'volume_4h_change_percent',
+            'volume_8h_usd', 'volume_8h_change_percent', 'volume_24h_usd', 'volume_24h_change_percent',
+            'trade_1h_count', 'trade_2h_count', 'trade_4h_count', 'trade_8h_count', 'trade_24h_count',
+            'price', 'price_change_1h_percent', 'price_change_2h_percent', 'price_change_4h_percent',
+            'price_change_8h_percent', 'price_change_24h_percent', 'holder', 'recent_listing_time',
+            'coingecko_id', 'serum_v3_usdc', 'serum_v3_usdt', 'website', 'telegram',
+            'twitter', 'description', 'discord', 'medium', 'ingested_at', 'batch_id', 'processing_date'
+        ]
+        
+        # Remove None values from processing state fields for new records
+        df.loc[df['silver_processed'].isna(), 'silver_processed'] = False
+        df.loc[df['silver_processed_at'].isna(), 'silver_processed_at'] = None
+        
+        self.logger.info(f"Batch: {batch_new} new tokens, {batch_updated} updated tokens (preserving processing state)")
+        
+        # Perform UPSERT operation with explicit update columns
         upsert_result = self.upsert_records(
             session=session,
             df=df,
             model_class=BronzeToken,
             conflict_columns=["token_address"],
+            update_columns=update_columns,
             batch_size=self.config.batch_size
         )
         
