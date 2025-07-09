@@ -352,18 +352,33 @@ class SilverWalletPnLTask(SilverTaskBase):
     def get_whales_to_process(self, session: Any) -> List[Dict[str, Any]]:
         """Get whales that need PnL processing."""
         try:
-            # Use raw SQL for consistency
+            # First, get overall whale processing status
+            status_query = text("""
+                SELECT 
+                    COUNT(*) as total_whales,
+                    COUNT(CASE WHEN pnl_processed = true THEN 1 END) as pnl_processed,
+                    COUNT(CASE WHEN pnl_processed = false THEN 1 END) as pnl_unprocessed,
+                    COUNT(CASE WHEN transactions_processed = true THEN 1 END) as transactions_processed,
+                    COUNT(CASE WHEN pnl_processed = false AND transactions_processed = true THEN 1 END) as ready_for_pnl
+                FROM silver.silver_whales
+            """)
+            status_result = session.execute(status_query)
+            status = status_result.fetchone()
+            
+            self.logger.info(f"Whale processing status: {status.total_whales} total, {status.pnl_processed} PnL processed, {status.transactions_processed} transactions processed, {status.ready_for_pnl} ready for PnL")
+            
+            # Use raw SQL for consistency - process ALL unprocessed wallets
             raw_query = text("""
                 SELECT wallet_address, tokens_held_count, pnl_processed_at, transactions_processed_at
                 FROM silver.silver_whales 
                 WHERE pnl_processed = false 
                 AND transactions_processed = true
-                LIMIT :limit
+                ORDER BY wallet_address
             """)
-            result = session.execute(raw_query, {"limit": self.config.wallet_batch_size})
+            result = session.execute(raw_query)
             whales_data = result.fetchall()
             
-            self.logger.info(f"Found {len(whales_data)} whales via raw SQL")
+            self.logger.info(f"Found {len(whales_data)} whales ready for PnL processing")
             
             whales_to_process = []
             for row in whales_data:
