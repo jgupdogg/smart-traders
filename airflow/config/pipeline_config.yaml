@@ -58,19 +58,19 @@ bronze_whales:
   max_tokens_per_run: 999999     # No limit - process ALL unprocessed tokens
   
   # Processing parameters
-  batch_size: 5                  # Tokens processed per batch
+  batch_size: 20                 # Tokens processed per batch
   refetch_interval_hours: 72     # Refetch whale data every 72 hours
 
 # Silver Whales Task Configuration
 silver_whales:
   # Whale selection criteria
-  min_tokens_held: 2             # Must hold at least 2 different tokens
-  min_total_value_usd: 10000     # $10k minimum total holdings value
+  min_tokens_held: 1             # Must hold at least 1 different token
+  min_total_value_usd: 1000      # $1k minimum total holdings value
   exclude_cex_addresses: true    # Exclude known CEX addresses
   max_whales_selected: 999999    # No limit - process ALL whales
   
   # Processing parameters
-  batch_size: 50                 # Database batch size for operations
+  batch_size: 100                # Database batch size for operations
   
   # Known CEX addresses to exclude (partial list)
   excluded_addresses:

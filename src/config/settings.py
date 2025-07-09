@@ -201,7 +201,7 @@ class Settings:
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r') as file:
                     self.config_data = yaml.safe_load(file) or {}
-                logger.info(f"Loaded configuration from {self.config_path}")
+                logger.debug(f"Loaded configuration from {self.config_path}")
             else:
                 logger.warning(f"Configuration file not found at {self.config_path}, using defaults")
                 self.config_data = {}
