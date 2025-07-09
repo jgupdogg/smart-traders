@@ -17,6 +17,7 @@ if config.config_file_name is not None:
 # This must be done before setting target_metadata
 try:
     from src.models.bronze import *  # noqa: F403,F401
+    from src.models.bronze_webhook import *  # noqa: F403,F401
     from src.models.silver import *  # noqa: F403,F401
     from src.models.gold import *  # noqa: F403,F401
     from src.models.state import *  # noqa: F403,F401

@@ -12,6 +12,7 @@ import os
 
 # Add src path to Python path for imports
 sys.path.append('/opt/airflow/src')
+sys.path.append('/opt/airflow')
 
 def run_bronze_tokens(**context):
     """Wrapper function to import and run bronze tokens task."""
@@ -50,8 +51,8 @@ def run_smart_traders(**context):
 
 def run_helius_webhook_update(**context):
     """Wrapper function to import and run Helius webhook update task."""
-    from smart_trader_tasks.helius_tasks import update_helius_webhook
-    return update_helius_webhook(**context)
+    from src.services.webhook_updater import sync_update_webhook_after_dag_run
+    return sync_update_webhook_after_dag_run()
 
 def init_database(**context):
     """Initialize database tables."""

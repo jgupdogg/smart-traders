@@ -175,12 +175,52 @@ services:
           --email admin@example.com \
           --password $${_AIRFLOW_WWW_USER_PASSWORD}
 
+  webhook-listener:
+    build: 
+      context: ./src/services/webhook-listener
+      dockerfile: Dockerfile
+    container_name: solana_webhook_listener
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-trader}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-trader_password}
+      - POSTGRES_DB=${POSTGRES_DB:-solana-smart-traders}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - HELIUS_API_KEY=${HELIUS_API_KEY}
+      - HELIUS_ADDRESSES=${HELIUS_ADDRESSES}
+      - WEBHOOK_BASE_URL=${WEBHOOK_BASE_URL}
+      - NGROK_HOST=ngrok
+    volumes:
+      - webhook_data:/app/data
+      - ./src:/app/src
+    ports:
+      - "8000:8000"
+    command: python main.py
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: solana_ngrok
+    restart: unless-stopped
+    depends_on:
+      - webhook-listener
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_TOKEN}
+    ports:
+      - "4040:4040"
+    command: http webhook-listener:8000
+
 volumes:
   postgres_data:
     driver: local
   redis_data:
     driver: local
   airflow_logs:
+    driver: local
+  webhook_data:
     driver: local
 
 networks:

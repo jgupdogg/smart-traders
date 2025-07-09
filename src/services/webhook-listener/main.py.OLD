@@ -1,0 +1,261 @@
+import os
+import json
+import logging
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from aiokafka import AIOKafkaProducer
+from aiokafka.errors import KafkaError
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Webhook Listener", version="2.0.0")
+
+# Configuration
+DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
+DATA_DIR.mkdir(parents=True, exist_ok=True)  # Only for URL file storage
+
+# Redpanda configuration
+REDPANDA_BROKERS = os.getenv("REDPANDA_BROKERS", "localhost:9092")
+WEBHOOK_TOPIC = os.getenv("WEBHOOK_TOPIC", "webhooks")
+
+# Global Kafka producer  
+producer: Optional[AIOKafkaProducer] = None
+
+# Global PySpark session for Delta Lake writes
+delta_manager = None
+spark_session = None
+
+class WebhookResponse(BaseModel):
+    status: str
+    message_id: str
+    timestamp: str
+
+async def get_kafka_producer():
+    """Get or create Kafka producer instance."""
+    global producer
+    if producer is None:
+        producer = AIOKafkaProducer(
+            bootstrap_servers=REDPANDA_BROKERS,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
+        await producer.start()
+        logger.info(f"Kafka producer connected to {REDPANDA_BROKERS}")
+    return producer
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize Kafka producer."""
+    try:
+        await get_kafka_producer()
+        logger.info("Kafka producer initialized successfully")
+        logger.info("FastAPI webhook listener running in STREAMING ONLY mode")
+    except Exception as e:
+        logger.error(f"Failed to initialize Kafka producer: {e}")
+        # Continue running even if Kafka is not available
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up Kafka producer on shutdown."""
+    global producer
+    if producer:
+        await producer.stop()
+        logger.info("Kafka producer stopped")
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Webhook Listener is running (streaming only mode)", 
+        "version": "2.0.0",
+        "mode": "streaming_only",
+        "file_storage": "disabled",
+        "redpanda_enabled": producer is not None,
+        "redpanda_brokers": REDPANDA_BROKERS,
+        "redpanda_topic": WEBHOOK_TOPIC
+    }
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy", 
+        "timestamp": datetime.utcnow().isoformat(),
+        "mode": "streaming_only",
+        "redpanda_connected": producer is not None
+    }
+
+@app.post("/webhooks")
+async def webhook_listener(request: Request) -> WebhookResponse:
+    """
+    Receive webhook payloads and stream them directly to Redpanda (no file storage).
+    """
+    try:
+        # Get the raw payload
+        payload = await request.json()
+        
+        # Generate unique ID and timestamp
+        webhook_id = str(uuid4())
+        timestamp = datetime.utcnow()
+        
+        # Extract transaction details from Helius webhook payload
+        transaction_signature = None
+        account_address = None
+        token_address = None
+        webhook_type = "UNKNOWN"
+        
+        try:
+            # Parse Helius webhook structure
+            if isinstance(payload, list) and len(payload) > 0:
+                first_event = payload[0]
+                transaction_signature = first_event.get("signature")
+                webhook_type = first_event.get("type", "UNKNOWN")
+                
+                # Extract account/token from the transaction
+                if "accountData" in first_event:
+                    account_data = first_event.get("accountData", [])
+                    if account_data:
+                        account_address = account_data[0].get("account")
+                        
+                # For token transfers, extract token address
+                if "tokenTransfers" in first_event:
+                    token_transfers = first_event.get("tokenTransfers", [])
+                    if token_transfers:
+                        token_address = token_transfers[0].get("mint")
+        except Exception as e:
+            logger.warning(f"Could not parse Helius webhook structure: {e}")
+        
+        # Write directly to Delta Lake (FAST! No PySpark startup needed)
+        try:
+            import pandas as pd
+            from deltalake import write_deltalake
+            
+            # Create webhook record
+            webhook_record = {
+                "webhook_id": webhook_id,
+                "transaction_signature": transaction_signature,
+                "webhook_type": webhook_type,
+                "webhook_timestamp": timestamp,
+                "raw_payload": json.dumps(payload),  # Store as JSON string
+                "account_address": account_address,
+                "token_address": token_address,
+                "source_ip": request.client.host if request.client else None,
+                "user_agent": request.headers.get("user-agent"),
+                "created_at": timestamp,
+                "ingested_at": timestamp,
+                "processing_date": timestamp.strftime("%Y-%m-%d"),
+                "processed_to_silver": False
+            }
+            
+            # Convert to DataFrame
+            df = pd.DataFrame([webhook_record])
+            
+            # MinIO/S3 connection settings
+            storage_options = {
+                "AWS_ENDPOINT_URL": "http://minio:9000",
+                "AWS_ACCESS_KEY_ID": "minioadmin", 
+                "AWS_SECRET_ACCESS_KEY": "minioadmin123",
+                "AWS_ALLOW_HTTP": "true",
+                "AWS_S3_ALLOW_UNSAFE_RENAME": "true"
+            }
+            
+            # Write directly to Delta Lake (ACID transaction, ~1-2 seconds)
+            table_path = "s3://webhook-notifications/bronze/webhooks"
+            
+            write_deltalake(
+                table_path,
+                df,
+                mode="append",
+                partition_by=["processing_date"],
+                storage_options=storage_options,
+                engine="rust"  # Use Rust engine for speed
+            )
+            
+            logger.info(f"Webhook written to Delta Lake: {webhook_id} (signature: {transaction_signature})")
+            
+        except Exception as e:
+            logger.error(f"Failed to write webhook to Delta Lake: {e}")
+            raise HTTPException(status_code=500, detail="Failed to store webhook")
+        
+        return WebhookResponse(
+            status="success",
+            message_id=webhook_id,
+            timestamp=timestamp.isoformat()
+        )
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON payload: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/webhooks/count")
+async def get_webhook_count():
+    """
+    Get Delta Lake webhook processing status.
+    """
+    return {
+        "mode": "direct_delta_lake",
+        "storage": "native_delta_lake",
+        "delta_lake_enabled": True,
+        "table_path": "s3://webhook-notifications/bronze/webhooks",
+        "message": "Webhooks are written directly to Delta Lake - no local storage"
+    }
+
+@app.get("/webhooks/status")
+async def get_webhook_status():
+    """
+    Get current webhook registration status.
+    """
+    try:
+        url_file = DATA_DIR / "current_webhook_url.txt"
+        if url_file.exists():
+            with open(url_file, 'r') as f:
+                webhook_url = f.read().strip()
+            return {
+                "status": "registered",
+                "webhook_url": webhook_url,
+                "helius_configured": bool(os.getenv("HELIUS_API_KEY")),
+                "redpanda_enabled": producer is not None,
+                "redpanda_brokers": REDPANDA_BROKERS,
+                "redpanda_topic": WEBHOOK_TOPIC,
+                "file_storage": "disabled"
+            }
+        else:
+            return {
+                "status": "not_registered",
+                "webhook_url": None,
+                "helius_configured": bool(os.getenv("HELIUS_API_KEY")),
+                "redpanda_enabled": producer is not None,
+                "redpanda_brokers": REDPANDA_BROKERS,
+                "redpanda_topic": WEBHOOK_TOPIC,
+                "file_storage": "disabled"
+            }
+    except Exception as e:
+        logger.error(f"Error getting webhook status: {e}")
+        raise HTTPException(status_code=500, detail="Error getting webhook status")
+
+@app.get("/webhooks/cleanup")
+async def cleanup_status():
+    """
+    Cleanup not needed - streaming mode only.
+    """
+    return {
+        "status": "not_applicable",
+        "message": "File storage disabled - no cleanup needed",
+        "mode": "streaming_only"
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
