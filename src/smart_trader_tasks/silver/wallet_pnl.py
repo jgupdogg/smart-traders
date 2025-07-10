@@ -38,6 +38,16 @@ class Sale:
     transaction_hash: str
 
 
+@dataclass
+class SaleResult:
+    """Result of processing a sale with FIFO matching."""
+    matched_quantity: float
+    unmatched_quantity: float
+    matched_pnl: float
+    cost_basis: float
+    sale_proceeds: float
+
+
 class TokenPosition:
     """Manages FIFO position tracking for a single token."""
     
@@ -47,11 +57,14 @@ class TokenPosition:
         self.purchases: List[Purchase] = []
         self.total_quantity = 0
         self.realized_pnl = 0
-        self.trade_count = 0
+        self.matched_trade_count = 0
+        self.unmatched_trade_count = 0
         self.winning_trades = 0
         self.losing_trades = 0
         self.total_purchase_value = 0
         self.total_sale_value = 0
+        self.matched_sale_value = 0
+        self.unmatched_sale_value = 0
         
     def add_purchase(self, quantity: float, price: float, timestamp: datetime, tx_hash: str):
         """Add a purchase to the position."""
@@ -63,44 +76,81 @@ class TokenPosition:
         self.total_quantity += quantity
         self.total_purchase_value += quantity * price
         
-    def process_sale(self, quantity: float, price: float, timestamp: datetime, tx_hash: str) -> float:
-        """Process a sale using FIFO method and return realized PnL."""
+    def process_sale(self, quantity: float, price: float, timestamp: datetime, tx_hash: str) -> SaleResult:
+        """Process a sale using FIFO method and return detailed results."""
         if quantity <= 0 or price <= 0:
-            return 0
+            return SaleResult(0, 0, 0, 0, 0)
             
+        sale_proceeds = quantity * price
         remaining_to_sell = quantity
         cost_basis = 0
+        matched_quantity = 0
         
-        # FIFO: Remove from oldest purchases first
-        while remaining_to_sell > 0 and self.purchases:
-            oldest_purchase = self.purchases[0]
+        # Calculate how much we can match against existing purchases
+        available_quantity = sum(p.quantity for p in self.purchases)
+        
+        if available_quantity >= quantity:
+            # Full match possible
+            matched_quantity = quantity
+            unmatched_quantity = 0
+        elif available_quantity > 0:
+            # Partial match
+            matched_quantity = available_quantity
+            unmatched_quantity = quantity - available_quantity
+        else:
+            # No match possible
+            matched_quantity = 0
+            unmatched_quantity = quantity
+        
+        # Process matched portion using FIFO
+        if matched_quantity > 0:
+            remaining_to_match = matched_quantity
             
-            if oldest_purchase.quantity <= remaining_to_sell:
-                # Use entire purchase
-                cost_basis += oldest_purchase.quantity * oldest_purchase.price
-                remaining_to_sell -= oldest_purchase.quantity
-                self.purchases.pop(0)
-            else:
-                # Use partial purchase
-                cost_basis += remaining_to_sell * oldest_purchase.price
-                oldest_purchase.quantity -= remaining_to_sell
-                remaining_to_sell = 0
+            while remaining_to_match > 0 and self.purchases:
+                oldest_purchase = self.purchases[0]
+                
+                if oldest_purchase.quantity <= remaining_to_match:
+                    # Use entire purchase
+                    cost_basis += oldest_purchase.quantity * oldest_purchase.price
+                    remaining_to_match -= oldest_purchase.quantity
+                    self.purchases.pop(0)
+                else:
+                    # Use partial purchase
+                    cost_basis += remaining_to_match * oldest_purchase.price
+                    oldest_purchase.quantity -= remaining_to_match
+                    remaining_to_match = 0
         
-        # Calculate realized PnL for this sale
-        sale_proceeds = quantity * price
-        trade_pnl = sale_proceeds - cost_basis
+        # Calculate PnL only for matched portion
+        matched_proceeds = matched_quantity * price
+        matched_pnl = matched_proceeds - cost_basis
         
-        self.realized_pnl += trade_pnl
+        # Update position tracking
         self.total_quantity -= quantity
         self.total_sale_value += sale_proceeds
-        self.trade_count += 1
         
-        if trade_pnl > 0:
-            self.winning_trades += 1
-        else:
-            self.losing_trades += 1
+        if matched_quantity > 0:
+            self.realized_pnl += matched_pnl
+            self.matched_trade_count += 1
+            self.matched_sale_value += matched_proceeds
+            
+            # Only count as winning trade if profit is at least $50 to filter out minor gains
+            if matched_pnl >= 50.0:
+                self.winning_trades += 1
+            elif matched_pnl <= -50.0:
+                self.losing_trades += 1
+            # Trades between -$50 and +$50 are not counted as winning or losing
         
-        return trade_pnl
+        if unmatched_quantity > 0:
+            self.unmatched_trade_count += 1
+            self.unmatched_sale_value += unmatched_quantity * price
+        
+        return SaleResult(
+            matched_quantity=matched_quantity,
+            unmatched_quantity=unmatched_quantity,
+            matched_pnl=matched_pnl,
+            cost_basis=cost_basis,
+            sale_proceeds=sale_proceeds
+        )
     
     def get_unrealized_pnl(self, current_price: float) -> float:
         """Calculate unrealized PnL based on current price."""
@@ -120,7 +170,8 @@ class WalletPnLCalculator:
         self.positions: Dict[str, TokenPosition] = {}
         self.total_realized_pnl = 0
         self.total_unrealized_pnl = 0
-        self.trade_history: List[Dict] = []
+        self.matched_trade_history: List[Dict] = []
+        self.unmatched_trade_history: List[Dict] = []
         self.first_trade_date = None
         self.last_trade_date = None
         
@@ -190,19 +241,34 @@ class WalletPnLCalculator:
             
         elif type_swap == 'from':
             # Wallet is giving up this token (selling)
-            trade_pnl = position.process_sale(quantity, price, timestamp, tx_hash)
+            sale_result = position.process_sale(quantity, price, timestamp, tx_hash)
             
-            # Record trade for history
-            self.trade_history.append({
-                'timestamp': timestamp,
-                'token_address': token_address,
-                'token_symbol': token_symbol,
-                'quantity': quantity,
-                'price': price,
-                'pnl': trade_pnl,
-                'tx_hash': tx_hash,
-                'side': side
-            })
+            # Record matched trades for history (only trades with known cost basis)
+            if sale_result.matched_quantity > 0:
+                self.matched_trade_history.append({
+                    'timestamp': timestamp,
+                    'token_address': token_address,
+                    'token_symbol': token_symbol,
+                    'quantity': sale_result.matched_quantity,
+                    'price': price,
+                    'pnl': sale_result.matched_pnl,
+                    'cost_basis': sale_result.cost_basis,
+                    'tx_hash': tx_hash,
+                    'side': side
+                })
+            
+            # Record unmatched trades separately
+            if sale_result.unmatched_quantity > 0:
+                self.unmatched_trade_history.append({
+                    'timestamp': timestamp,
+                    'token_address': token_address,
+                    'token_symbol': token_symbol,
+                    'quantity': sale_result.unmatched_quantity,
+                    'price': price,
+                    'proceeds': sale_result.unmatched_quantity * price,
+                    'tx_hash': tx_hash,
+                    'side': side
+                })
             
             # Sale processed
     
@@ -210,27 +276,32 @@ class WalletPnLCalculator:
         """Calculate comprehensive wallet metrics."""
         # Filter out positions with no meaningful activity
         active_positions = {addr: pos for addr, pos in self.positions.items() 
-                          if pos.trade_count > 0 or pos.total_purchase_value > 0}
+                          if pos.matched_trade_count > 0 or pos.unmatched_trade_count > 0 or pos.total_purchase_value > 0}
         
-        # Position summary calculated
-        
-        # Aggregate realized PnL from all positions
+        # Aggregate realized PnL from all positions (only matched trades)
         self.total_realized_pnl = sum(pos.realized_pnl for pos in active_positions.values())
         
-        # Calculate trade statistics (only count realized trades)
-        total_trades = sum(pos.trade_count for pos in active_positions.values())
+        # Calculate trade statistics (only count matched trades for PnL metrics)
+        matched_trades = sum(pos.matched_trade_count for pos in active_positions.values())
+        unmatched_trades = sum(pos.unmatched_trade_count for pos in active_positions.values())
+        total_trades = matched_trades + unmatched_trades
+        
         winning_trades = sum(pos.winning_trades for pos in active_positions.values())
         losing_trades = sum(pos.losing_trades for pos in active_positions.values())
         
-        # Validate trade counts
-        if winning_trades + losing_trades != total_trades:
-            logger.warning(f"Trade count mismatch: {winning_trades} + {losing_trades} != {total_trades}")
+        # Calculate meaningful trades (winning or losing with >= $50 difference)
+        meaningful_trades = winning_trades + losing_trades
+        neutral_trades = matched_trades - meaningful_trades
         
-        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        # Calculate win rate only for meaningful trades (>= $50 profit/loss)
+        win_rate = (winning_trades / meaningful_trades * 100) if meaningful_trades > 0 else 0
         
-        # Calculate average win/loss from trade history
-        winning_trades_list = [trade for trade in self.trade_history if trade['pnl'] > 0]
-        losing_trades_list = [trade for trade in self.trade_history if trade['pnl'] < 0]
+        # Calculate coverage ratio
+        coverage_ratio = (matched_trades / total_trades * 100) if total_trades > 0 else 0
+        
+        # Calculate average win/loss from meaningful trades only (>= $50 profit/loss)
+        winning_trades_list = [trade for trade in self.matched_trade_history if trade['pnl'] >= 50.0]
+        losing_trades_list = [trade for trade in self.matched_trade_history if trade['pnl'] <= -50.0]
         
         winning_pnl = sum(trade['pnl'] for trade in winning_trades_list)
         losing_pnl = sum(trade['pnl'] for trade in losing_trades_list)
@@ -238,26 +309,29 @@ class WalletPnLCalculator:
         avg_win = winning_pnl / len(winning_trades_list) if winning_trades_list else 0
         avg_loss = abs(losing_pnl) / len(losing_trades_list) if losing_trades_list else 0
         
-        # Calculate trading frequency
+        # Calculate trading frequency based on matched trades
         trading_days = 0
         if self.first_trade_date and self.last_trade_date:
             trading_days = (self.last_trade_date - self.first_trade_date).days + 1
         
-        trade_frequency = total_trades / trading_days if trading_days > 0 else 0
+        trade_frequency = matched_trades / trading_days if trading_days > 0 else 0
         
         # Calculate volume metrics (separate buy and sell volumes)
         total_purchase_volume = sum(pos.total_purchase_value for pos in active_positions.values())
+        matched_sale_volume = sum(pos.matched_sale_value for pos in active_positions.values())
+        unmatched_sale_volume = sum(pos.unmatched_sale_value for pos in active_positions.values())
         total_sale_volume = sum(pos.total_sale_value for pos in active_positions.values())
         total_volume = total_purchase_volume + total_sale_volume
         
-        avg_trade_size = total_volume / (total_trades * 2) if total_trades > 0 else 0  # Divide by 2 since each trade has buy+sell
+        # Calculate average trade size based on matched trades only
+        avg_trade_size = (total_purchase_volume + matched_sale_volume) / (matched_trades * 2) if matched_trades > 0 else 0
         
-        # Calculate drawdown using cumulative PnL over time
+        # Calculate drawdown using cumulative PnL over time (matched trades only)
         cumulative_pnl = 0
         peak_pnl = 0
         max_drawdown = 0
         
-        for trade in sorted(self.trade_history, key=lambda x: x['timestamp']):
+        for trade in sorted(self.matched_trade_history, key=lambda x: x['timestamp']):
             cumulative_pnl += trade['pnl']
             if cumulative_pnl > peak_pnl:
                 peak_pnl = cumulative_pnl
@@ -265,19 +339,20 @@ class WalletPnLCalculator:
                 drawdown = (peak_pnl - cumulative_pnl) / peak_pnl
                 max_drawdown = max(max_drawdown, drawdown)
         
-        # Calculate Sharpe ratio (simplified - using trade PnL as returns)
+        # Calculate Sharpe ratio (simplified - using matched trade PnL as returns)
         sharpe_ratio = 0
-        if len(self.trade_history) > 1:
-            returns = [trade['pnl'] for trade in self.trade_history]
+        if len(self.matched_trade_history) > 1:
+            returns = [trade['pnl'] for trade in self.matched_trade_history]
             avg_return = np.mean(returns)
             std_return = np.std(returns)
             sharpe_ratio = avg_return / std_return if std_return > 0 else 0
         
-        # Enhanced smart trader eligibility
+        # Enhanced smart trader eligibility (based on meaningful trades with >= $50 profit/loss)
         smart_trader_eligible = (
-            total_trades >= 5 and  # Minimum trade count
-            win_rate >= 50 and    # Minimum win rate
-            self.total_realized_pnl > 100 and  # Minimum absolute profit
+            meaningful_trades >= 5 and  # Minimum meaningful trade count (>= $50 profit/loss)
+            coverage_ratio >= 70 and  # At least 70% of trades must have known cost basis
+            win_rate >= 60 and    # Minimum win rate (for meaningful trades)
+            self.total_realized_pnl > 500 and  # Minimum absolute profit ($500)
             trading_days >= 2     # At least 2 days of activity
         )
         
@@ -310,10 +385,17 @@ class WalletPnLCalculator:
             'avg_loss_usd': round(avg_loss, 2),
             'trade_frequency_per_day': round(trade_frequency, 3),
             'total_trades': int(total_trades),
+            'matched_trades': int(matched_trades),
+            'unmatched_trades': int(unmatched_trades),
+            'meaningful_trades': int(meaningful_trades),
+            'neutral_trades': int(neutral_trades),
+            'coverage_ratio_percent': round(coverage_ratio, 2),
             'winning_trades': int(winning_trades),
             'losing_trades': int(losing_trades),
             'tokens_traded_count': len(active_positions),
             'total_volume_usd': round(total_volume, 2),
+            'matched_volume_usd': round(total_purchase_volume + matched_sale_volume, 2),
+            'unmatched_volume_usd': round(unmatched_sale_volume, 2),
             'avg_trade_size_usd': round(avg_trade_size, 2),
             'first_trade_at': self.first_trade_date,
             'last_trade_at': self.last_trade_date,
@@ -323,7 +405,7 @@ class WalletPnLCalculator:
             'smart_trader_eligible': smart_trader_eligible,
             'smart_trader_score': round(smart_trader_score, 4),
             'last_calculated_at': datetime.utcnow(),
-            'calculation_method': 'fifo_enhanced',
+            'calculation_method': 'fifo_cost_basis_matched_min50',
             'tokens_analyzed': {
                 'count': len(active_positions),
                 'tokens': [
@@ -331,12 +413,14 @@ class WalletPnLCalculator:
                         'address': pos.token_address,
                         'symbol': pos.token_symbol,
                         'realized_pnl': round(pos.realized_pnl, 2),
-                        'trade_count': pos.trade_count,
+                        'matched_trades': pos.matched_trade_count,
+                        'unmatched_trades': pos.unmatched_trade_count,
                         'purchase_volume': round(pos.total_purchase_value, 2),
-                        'sale_volume': round(pos.total_sale_value, 2)
+                        'matched_sale_volume': round(pos.matched_sale_value, 2),
+                        'unmatched_sale_volume': round(pos.unmatched_sale_value, 2)
                     }
                     for pos in active_positions.values()
-                    if pos.trade_count > 0 or abs(pos.realized_pnl) > 1  # Only include meaningful positions
+                    if pos.matched_trade_count > 0 or pos.unmatched_trade_count > 0 or abs(pos.realized_pnl) > 1
                 ]
             }
         }
@@ -471,6 +555,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             
             if len(transactions) < self.config.min_trades_for_calculation:
                 # Skipping wallet - insufficient transactions
+                self.logger.info(f"Skipping wallet {wallet_address}: only {len(transactions)} transactions (minimum: {self.config.min_trades_for_calculation})")
                 
                 self.state_manager.create_or_update_state(
                     task_name=self.task_name,
@@ -479,6 +564,9 @@ class SilverWalletPnLTask(SilverTaskBase):
                     state="skipped",
                     metadata={"skip_reason": "insufficient_trades", "transaction_count": len(transactions)}
                 )
+                
+                # Mark whale as completed but with no PnL (skipped)
+                self._mark_whale_completed(session, wallet_address)
                 return None
             
             # Calculate PnL using FIFO method
@@ -486,11 +574,12 @@ class SilverWalletPnLTask(SilverTaskBase):
             
             metrics = self.calculate_wallet_pnl(wallet_address, transactions)
             
-            # Only include if calculation method matches config (allow both fifo and fifo_enhanced)
-            if self.config.calculation_method not in ['fifo', 'fifo_enhanced']:
+            # Only include if calculation method matches config (allow fifo methods)
+            if self.config.calculation_method not in ['fifo', 'fifo_enhanced', 'fifo_cost_basis_matched', 'fifo_cost_basis_matched_min50']:
+                self.logger.warning(f"Skipping wallet {wallet_address}: calculation method {self.config.calculation_method} not in allowed list")
                 return None
             
-            # Mark wallet as processed
+            # Mark wallet state as completed (but don't mark whale as completed yet)
             self.state_manager.create_or_update_state(
                 task_name=self.task_name,
                 entity_type="wallet",
@@ -503,8 +592,8 @@ class SilverWalletPnLTask(SilverTaskBase):
                 }
             )
             
-            # Update silver_whales table using raw SQL
-            self._mark_whale_completed(session, wallet_address)
+            # Don't mark whale as completed here - will do after successful DB insert
+            # self._mark_whale_completed(session, wallet_address)
             
             # Calculated PnL
             
@@ -562,11 +651,14 @@ class SilverWalletPnLTask(SilverTaskBase):
                 
                 # Process wallets
                 pnl_records = []
+                wallet_addresses_to_mark = []  # Track which wallets to mark as completed
+                
                 for whale in whales_to_process:
                     try:
                         metrics = self.process_wallet(session, whale)
                         if metrics:  # Skip if insufficient trades or wrong calculation method
                             pnl_records.append(metrics)
+                            wallet_addresses_to_mark.append(whale['wallet_address'])
                         self.processed_entities += 1
                         
                     except Exception as e:
@@ -574,21 +666,37 @@ class SilverWalletPnLTask(SilverTaskBase):
                         continue
                 
                 # Store PnL records if any were processed
+                successfully_stored_wallets = []
                 if pnl_records:
+                    self.logger.info(f"Storing {len(pnl_records)} PnL records to database")
                     df = pd.DataFrame(pnl_records)
                     
-                    upsert_result = self.upsert_records(
-                        session=session,
-                        df=df,
-                        model_class=SilverWalletPnL,
-                        conflict_columns=["wallet_address"],
-                        batch_size=self.config.batch_size
-                    )
-                    
-                    self.new_records = upsert_result.get('inserted', 0)
-                    self.updated_records = upsert_result.get('updated', 0)
-                    
-                    # Stored PnL records
+                    try:
+                        upsert_result = self.upsert_records(
+                            session=session,
+                            df=df,
+                            model_class=SilverWalletPnL,
+                            conflict_columns=["wallet_address"],
+                            batch_size=self.config.batch_size
+                        )
+                        
+                        self.new_records = upsert_result.get('inserted', 0)
+                        self.updated_records = upsert_result.get('updated', 0)
+                        
+                        # Only mark wallets as completed after successful DB insert
+                        for wallet_address in wallet_addresses_to_mark:
+                            try:
+                                self._mark_whale_completed(session, wallet_address)
+                                successfully_stored_wallets.append(wallet_address)
+                            except Exception as e:
+                                self.logger.error(f"Failed to mark whale {wallet_address} as completed: {e}")
+                        
+                        self.logger.info(f"Successfully stored {self.new_records + self.updated_records} PnL records and marked {len(successfully_stored_wallets)} whales as completed")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Failed to store PnL records: {e}")
+                        # Don't mark any whales as completed if DB insert failed
+                        raise
             
             # Log task completion
             status = "completed" if not self.failed_entities else "partial_success"

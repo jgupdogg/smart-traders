@@ -83,6 +83,8 @@ class SilverWalletPnL(SQLModel, table=True):
         Index("idx_silver_wallet_pnl_realized_pnl", "total_realized_pnl_usd"),
         Index("idx_silver_wallet_pnl_win_rate", "win_rate_percent"),
         Index("idx_silver_wallet_pnl_trade_count", "total_trades"),
+        Index("idx_silver_wallet_pnl_matched_trades", "matched_trades"),
+        Index("idx_silver_wallet_pnl_coverage_ratio", "coverage_ratio_percent"),
         Index("idx_silver_wallet_pnl_last_calculated", "last_calculated_at"),
         Index("idx_silver_wallet_pnl_smart_trader_eligible", "smart_trader_eligible"),
         Index("idx_silver_wallet_pnl_gold_processed", "gold_processed"),
@@ -104,12 +106,19 @@ class SilverWalletPnL(SQLModel, table=True):
     
     # Trade statistics
     total_trades: Optional[int] = Field(default=None, description="Total number of trades")
-    winning_trades: Optional[int] = Field(default=None, description="Number of profitable trades")
-    losing_trades: Optional[int] = Field(default=None, description="Number of losing trades")
+    matched_trades: Optional[int] = Field(default=None, description="Number of trades with known cost basis")
+    unmatched_trades: Optional[int] = Field(default=None, description="Number of trades without known cost basis")
+    meaningful_trades: Optional[int] = Field(default=None, description="Number of trades with >= $50 profit/loss")
+    neutral_trades: Optional[int] = Field(default=None, description="Number of trades with < $50 profit/loss")
+    coverage_ratio_percent: Optional[float] = Field(default=None, description="Percentage of trades with known cost basis")
+    winning_trades: Optional[int] = Field(default=None, description="Number of profitable trades (>= $50)")
+    losing_trades: Optional[int] = Field(default=None, description="Number of losing trades (<= -$50)")
     
     # Portfolio metrics
     tokens_traded_count: Optional[int] = Field(default=None, description="Number of different tokens traded")
     total_volume_usd: Optional[float] = Field(default=None, description="Total trading volume in USD")
+    matched_volume_usd: Optional[float] = Field(default=None, description="Trading volume for matched trades with known cost basis")
+    unmatched_volume_usd: Optional[float] = Field(default=None, description="Trading volume for unmatched trades without known cost basis")
     avg_trade_size_usd: Optional[float] = Field(default=None, description="Average trade size in USD")
     
     # Time-based metrics
@@ -127,7 +136,7 @@ class SilverWalletPnL(SQLModel, table=True):
     
     # Metadata
     last_calculated_at: datetime = Field(default_factory=datetime.utcnow, description="When PnL was last calculated")
-    calculation_method: str = Field(default="fifo", max_length=20, description="Method used for PnL calculation")
+    calculation_method: str = Field(default="fifo", max_length=50, description="Method used for PnL calculation")
     tokens_analyzed: Optional[dict] = Field(default=None, sa_column=Column(JSONB), description="JSON metadata about tokens included in analysis")
     
     # State tracking for gold layer processing

@@ -102,7 +102,7 @@ silver_wallet_pnl:
   # PnL calculation parameters
   calculation_method: "fifo"          # FIFO cost basis calculation
   include_unrealized: false           # Only calculate realized PnL
-  min_trades_for_calculation: 5       # Minimum trades needed for PnL calc
+  min_trades_for_calculation: 2       # Minimum trades needed for PnL calc
   
   # Processing parameters
   wallet_batch_size: 10               # Wallets processed per batch
