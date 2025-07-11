@@ -26,7 +26,8 @@ class HeliusWebhookManager:
     
     def get_addresses(self) -> List[str]:
         """
-        Get addresses to monitor from gold.top_traders in MinIO.
+        Get addresses to monitor from gold.smart_traders in PostgreSQL.
+        Uses same tier-based prioritization as webhook updater.
         Falls back to environment variable if gold layer unavailable.
         """
         try:
@@ -71,14 +72,24 @@ class HeliusWebhookManager:
             conn = psycopg2.connect(**db_config)
             cursor = conn.cursor()
             
-            # Query top 100 smart traders using same criteria as smart traders task
-            # This matches the selection logic in smart_traders.py
+            # Query top 100 smart traders using enhanced tier scoring
+            # This matches the selection logic in the webhook updater
             query = """
             SELECT wallet_address 
             FROM gold.smart_traders 
             WHERE wallet_address IS NOT NULL
               AND wallet_address != ''
-            ORDER BY composite_score DESC, total_realized_pnl_usd DESC
+            ORDER BY 
+                CASE performance_tier 
+                    WHEN 'ELITE' THEN 1 
+                    WHEN 'STRONG' THEN 2 
+                    WHEN 'PROMISING' THEN 3 
+                    WHEN 'QUALIFIED' THEN 4 
+                    WHEN 'EXPERIMENTAL' THEN 5 
+                    ELSE 6 
+                END,
+                tier_score DESC, 
+                total_realized_pnl_usd DESC
             LIMIT 100
             """
             

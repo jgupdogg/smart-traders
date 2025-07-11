@@ -121,6 +121,12 @@ class SilverWalletPnL(SQLModel, table=True):
     unmatched_volume_usd: Optional[float] = Field(default=None, description="Trading volume for unmatched trades without known cost basis")
     avg_trade_size_usd: Optional[float] = Field(default=None, description="Average trade size in USD")
     
+    # ROI metrics (only for matched trades with known cost basis)
+    matched_cost_basis_usd: Optional[float] = Field(default=None, description="Total cost basis for matched trades")
+    total_roi_percent: Optional[float] = Field(default=None, description="Overall ROI percentage for all matched trades")
+    avg_roi_percent: Optional[float] = Field(default=None, description="Average ROI percentage per matched trade")
+    median_roi_percent: Optional[float] = Field(default=None, description="Median ROI percentage for matched trades")
+    
     # Time-based metrics
     first_trade_at: Optional[datetime] = Field(default=None, description="Timestamp of first trade")
     last_trade_at: Optional[datetime] = Field(default=None, description="Timestamp of last trade")

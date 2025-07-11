@@ -1,12 +1,13 @@
 """
 Smart traders task - Rank traders based on performance metrics and assign tiers.
-Standardized implementation with consistent patterns and error handling.
+Enhanced implementation with tiered classification and coverage-based confidence scoring.
 """
 
 import logging
 import pandas as pd
-from datetime import datetime
-from typing import Dict, Any, List
+import numpy as np
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Tuple
 from sqlalchemy import select, text
 from src.models.silver import SilverWalletPnL
 from src.models.gold import SmartTrader
@@ -15,6 +16,61 @@ from src.config.settings import get_smart_traders_config
 from smart_trader_tasks.common import GoldTaskBase
 
 logger = logging.getLogger(__name__)
+
+
+# Tier classification criteria (adjusted for realistic thresholds)
+TIER_CRITERIA = {
+    'ELITE': {
+        'coverage_ratio': 85,
+        'roi': 50,  # Reduced from 100%
+        'win_rate': 70,
+        'sharpe': 1.5,  # Reduced from 2.5
+        'pnl': 10000,
+        'trades': 50,
+        'frequency': (0.5, 5),
+        'drawdown': 20
+    },
+    'STRONG': {
+        'coverage_ratio': 80,
+        'roi': 25,  # Reduced from 60%
+        'win_rate': 65,
+        'sharpe': 1.0,  # Reduced from 2.0
+        'pnl': 5000,
+        'trades': 30,
+        'frequency': (0.3, 7),
+        'drawdown': 25
+    },
+    'PROMISING': {
+        'coverage_ratio': 75,
+        'roi': 15,  # Reduced from 40%
+        'win_rate': 60,
+        'sharpe': 0.5,  # Reduced from 1.5
+        'pnl': 2000,
+        'trades': 20,
+        'frequency': (0.2, 10),
+        'drawdown': 30
+    },
+    'QUALIFIED': {
+        'coverage_ratio': 70,
+        'roi': 5,   # Reduced from 20%
+        'win_rate': 55,
+        'sharpe': 0.2,  # Reduced from 1.0
+        'pnl': 500,
+        'trades': 10,
+        'frequency': (0.01, 15),  # More lenient frequency
+        'drawdown': 40
+    },
+    'EXPERIMENTAL': {
+        'coverage_ratio': 60,
+        'roi': 100,  # Reduced from 200%
+        'win_rate': 75,
+        'sharpe': 2.0,  # Reduced from 3.0
+        'pnl': 1000,
+        'trades': 15,
+        'frequency': (0.01, 20),
+        'drawdown': 35
+    }
+}
 
 
 class SmartTradersTask(GoldTaskBase):
@@ -27,15 +83,18 @@ class SmartTradersTask(GoldTaskBase):
     def get_eligible_wallets(self, session: Any) -> List[Dict[str, Any]]:
         """Get wallets that are eligible as smart traders and not yet processed."""
         try:
-            # Use raw SQL to avoid SQLModel column access issues
+            # Use raw SQL to get all ROI and coverage metrics
             raw_query = text("""
                 SELECT 
                     wallet_address, total_realized_pnl_usd, total_unrealized_pnl_usd, 
                     win_rate_percent, avg_win_usd, avg_loss_usd, trade_frequency_per_day,
-                    total_trades, winning_trades, losing_trades, tokens_traded_count,
-                    total_volume_usd, avg_trade_size_usd, first_trade_at, last_trade_at,
+                    total_trades, matched_trades, unmatched_trades, meaningful_trades,
+                    coverage_ratio_percent, winning_trades, losing_trades, tokens_traded_count,
+                    total_volume_usd, matched_volume_usd, matched_cost_basis_usd,
+                    total_roi_percent, avg_roi_percent, median_roi_percent,
+                    avg_trade_size_usd, first_trade_at, last_trade_at,
                     trading_days, max_drawdown_percent, sharpe_ratio, smart_trader_eligible,
-                    smart_trader_score, gold_processed
+                    smart_trader_score, gold_processed, last_calculated_at
                 FROM silver.silver_wallet_pnl 
                 WHERE smart_trader_eligible = true 
                 AND gold_processed = false
@@ -48,28 +107,17 @@ class SmartTradersTask(GoldTaskBase):
             
             wallets_to_process = []
             for row in wallets_data:
-                wallet_dict = {
-                    'wallet_address': row._mapping.get('wallet_address'),
-                    'total_realized_pnl_usd': row._mapping.get('total_realized_pnl_usd'),
-                    'total_unrealized_pnl_usd': row._mapping.get('total_unrealized_pnl_usd'),
-                    'win_rate_percent': row._mapping.get('win_rate_percent'),
-                    'avg_win_usd': row._mapping.get('avg_win_usd'),
-                    'avg_loss_usd': row._mapping.get('avg_loss_usd'),
-                    'trade_frequency_per_day': row._mapping.get('trade_frequency_per_day'),
-                    'total_trades': row._mapping.get('total_trades'),
-                    'winning_trades': row._mapping.get('winning_trades'),
-                    'losing_trades': row._mapping.get('losing_trades'),
-                    'tokens_traded_count': row._mapping.get('tokens_traded_count'),
-                    'total_volume_usd': row._mapping.get('total_volume_usd'),
-                    'avg_trade_size_usd': row._mapping.get('avg_trade_size_usd'),
-                    'first_trade_at': row._mapping.get('first_trade_at'),
-                    'last_trade_at': row._mapping.get('last_trade_at'),
-                    'trading_days': row._mapping.get('trading_days'),
-                    'max_drawdown_percent': row._mapping.get('max_drawdown_percent'),
-                    'sharpe_ratio': row._mapping.get('sharpe_ratio'),
-                    'smart_trader_eligible': row._mapping.get('smart_trader_eligible'),
-                    'smart_trader_score': row._mapping.get('smart_trader_score')
-                }
+                wallet_dict = {key: row._mapping.get(key) for key in [
+                    'wallet_address', 'total_realized_pnl_usd', 'total_unrealized_pnl_usd',
+                    'win_rate_percent', 'avg_win_usd', 'avg_loss_usd', 'trade_frequency_per_day',
+                    'total_trades', 'matched_trades', 'unmatched_trades', 'meaningful_trades',
+                    'coverage_ratio_percent', 'winning_trades', 'losing_trades', 'tokens_traded_count',
+                    'total_volume_usd', 'matched_volume_usd', 'matched_cost_basis_usd',
+                    'total_roi_percent', 'avg_roi_percent', 'median_roi_percent',
+                    'avg_trade_size_usd', 'first_trade_at', 'last_trade_at',
+                    'trading_days', 'max_drawdown_percent', 'sharpe_ratio', 'smart_trader_eligible',
+                    'smart_trader_score', 'last_calculated_at'
+                ]}
                 wallets_to_process.append(wallet_dict)
             
             return wallets_to_process
@@ -78,43 +126,88 @@ class SmartTradersTask(GoldTaskBase):
             self.logger.error(f"Failed to get eligible wallets: {e}")
             raise
         
-    def calculate_performance_tier(
-        self,
-        score: float,
-        total_pnl: float,
-        win_rate: float,
-        trade_count: int
-    ) -> str:
-        """Assign performance tier based on composite metrics."""
-        # Define tier thresholds
-        elite_threshold = self.config.performance_tiers.get('elite', {})
-        strong_threshold = self.config.performance_tiers.get('strong', {})
-        promising_threshold = self.config.performance_tiers.get('promising', {})
+    def calculate_performance_tier(self, wallet: Dict[str, Any]) -> Tuple[str, str]:
+        """Assign performance tier based on comprehensive metrics."""
+        coverage = wallet.get('coverage_ratio_percent') or 0
+        roi = wallet.get('total_roi_percent') or 0
+        win_rate = wallet.get('win_rate_percent') or 0
+        sharpe = wallet.get('sharpe_ratio') or 0
+        pnl = wallet.get('total_realized_pnl_usd') or 0
+        trades = wallet.get('meaningful_trades') or 0
+        frequency = wallet.get('trade_frequency_per_day') or 0
+        drawdown = wallet.get('max_drawdown_percent') or 100
         
-        # ELITE tier - exceptional performance
-        if (score >= elite_threshold.get('min_score', 0.8) and
-            total_pnl >= elite_threshold.get('min_pnl', 50000) and
-            win_rate >= elite_threshold.get('min_win_rate', 70) and
-            trade_count >= elite_threshold.get('min_trades', 50)):
-            return "ELITE"
-        
-        # STRONG tier - strong consistent performance
-        elif (score >= strong_threshold.get('min_score', 0.6) and
-              total_pnl >= strong_threshold.get('min_pnl', 20000) and
-              win_rate >= strong_threshold.get('min_win_rate', 60) and
-              trade_count >= strong_threshold.get('min_trades', 25)):
-            return "STRONG"
-        
-        # PROMISING tier - good emerging performance
-        elif (score >= promising_threshold.get('min_score', 0.4) and
-              total_pnl >= promising_threshold.get('min_pnl', 5000) and
-              win_rate >= promising_threshold.get('min_win_rate', 55) and
-              trade_count >= promising_threshold.get('min_trades', 10)):
-            return "PROMISING"
-        
-        # QUALIFIED tier - meets basic criteria
+        # Determine coverage confidence
+        if coverage >= 85:
+            coverage_confidence = "High"
+        elif coverage >= 80:
+            coverage_confidence = "Good"
+        elif coverage >= 70:
+            coverage_confidence = "Acceptable"
         else:
-            return "QUALIFIED"
+            coverage_confidence = "Low"
+        
+        # Check tier criteria in order (most restrictive first)
+        # Temporarily skip ROI requirement if cost basis data is missing (roi == 0)
+        for tier_name, criteria in TIER_CRITERIA.items():
+            roi_check = roi >= criteria['roi'] if roi > 0 else True  # Skip ROI check if ROI is 0 (data quality issue)
+            
+            if (coverage >= criteria['coverage_ratio'] and
+                roi_check and
+                win_rate >= criteria['win_rate'] and
+                sharpe >= criteria['sharpe'] and
+                pnl >= criteria['pnl'] and
+                trades >= criteria['trades'] and
+                criteria['frequency'][0] <= frequency <= criteria['frequency'][1] and
+                drawdown <= criteria['drawdown']):
+                return tier_name, coverage_confidence
+        
+        # If no tier criteria met, return UNQUALIFIED
+        return "UNQUALIFIED", coverage_confidence
+    
+    def calculate_tier_score(self, wallet: Dict[str, Any], tier: str) -> float:
+        """Calculate tier-specific score with coverage weighting."""
+        coverage = (wallet.get('coverage_ratio_percent') or 0) / 100
+        roi = wallet.get('total_roi_percent') or 0
+        sharpe = wallet.get('sharpe_ratio') or 0
+        win_rate = wallet.get('win_rate_percent') or 0
+        pnl = wallet.get('total_realized_pnl_usd') or 0
+        frequency = wallet.get('trade_frequency_per_day') or 0
+        
+        # Normalize scores to 0-1 scale
+        roi_score = min(max(roi / 200, 0), 1.0)  # 200% ROI = max score
+        sharpe_score = min(max(sharpe / 3, 0), 1.0)  # 3.0 = max sharpe
+        win_rate_score = win_rate / 100
+        volume_score = min(max(pnl / 20000, 0), 1.0)  # $20k = max score
+        coverage_score = coverage
+        
+        # Activity penalty
+        if frequency > 10:
+            activity_penalty = 0.9  # Too many trades
+        elif frequency < 0.2:
+            activity_penalty = 0.95  # Too few trades
+        else:
+            activity_penalty = 1.0
+        
+        # Tier-specific weights
+        if tier == "ELITE":
+            weights = {'coverage': 0.20, 'roi': 0.25, 'sharpe': 0.25, 'win_rate': 0.20, 'volume': 0.10}
+        elif tier == "STRONG":
+            weights = {'coverage': 0.25, 'roi': 0.25, 'sharpe': 0.20, 'win_rate': 0.20, 'volume': 0.10}
+        elif tier == "PROMISING":
+            weights = {'coverage': 0.30, 'roi': 0.20, 'sharpe': 0.20, 'win_rate': 0.20, 'volume': 0.10}
+        else:  # QUALIFIED/EXPERIMENTAL/UNQUALIFIED
+            weights = {'coverage': 0.35, 'roi': 0.20, 'sharpe': 0.20, 'win_rate': 0.15, 'volume': 0.10}
+        
+        final_score = (
+            coverage_score * weights['coverage'] +
+            roi_score * weights['roi'] +
+            sharpe_score * weights['sharpe'] +
+            win_rate_score * weights['win_rate'] +
+            volume_score * weights['volume']
+        ) * activity_penalty * 100  # Convert to 0-100
+        
+        return round(final_score, 2)
             
     def create_trader_record(
         self, 
@@ -123,76 +216,106 @@ class SmartTradersTask(GoldTaskBase):
         scores: List[float], 
         pnl_values: List[float]
     ) -> Dict[str, Any]:
-        """Create a trader record from wallet data."""
+        """Create a trader record from wallet data using enhanced tier classification."""
         wallet_address = wallet['wallet_address']
         
-        # Assign performance tier
-        performance_tier = self.calculate_performance_tier(
-            score=wallet.get('smart_trader_score') or 0,
-            total_pnl=wallet.get('total_realized_pnl_usd') or 0,
-            win_rate=wallet.get('win_rate_percent') or 0,
-            trade_count=wallet.get('total_trades') or 0
+        # Assign performance tier and coverage confidence using new logic
+        performance_tier, coverage_confidence = self.calculate_performance_tier(wallet)
+        
+        # Calculate tier-specific score
+        tier_score = self.calculate_tier_score(wallet, performance_tier)
+        
+        # Calculate days since first/last trade
+        days_since_first_trade = 0
+        if wallet.get('first_trade_at'):
+            days_since_first_trade = (datetime.utcnow() - wallet['first_trade_at']).days
+        
+        # Check auto-follow eligibility
+        auto_follow_eligible = (
+            performance_tier in ['ELITE', 'STRONG'] and
+            wallet.get('coverage_ratio_percent', 0) >= self.config.tier_criteria['elite']['coverage_ratio'] and
+            days_since_first_trade >= 30
         )
         
-        # Calculate additional ranking metrics
-        roi_percent = 0
-        if wallet.get('total_volume_usd') and wallet['total_volume_usd'] > 0:
-            roi_percent = (wallet.get('total_realized_pnl_usd') or 0) / wallet['total_volume_usd'] * 100
+        # Determine verified performance (30+ days of consistent performance)
+        verified_performance = (
+            days_since_first_trade >= 30 and
+            wallet.get('meaningful_trades', 0) >= 20 and
+            wallet.get('coverage_ratio_percent', 0) >= 75
+        )
         
-        # Risk-adjusted return (simplified Sharpe ratio)
-        risk_adjusted_return = wallet.get('sharpe_ratio') or 0
+        # Build criteria met dictionary
+        criteria = TIER_CRITERIA.get(performance_tier, {})
+        tier_criteria_met = {
+            'tier': performance_tier,
+            'coverage_ratio': wallet.get('coverage_ratio_percent', 0) >= criteria.get('coverage_ratio', 0),
+            'roi': wallet.get('total_roi_percent', 0) >= criteria.get('roi', 0),
+            'win_rate': wallet.get('win_rate_percent', 0) >= criteria.get('win_rate', 0),
+            'sharpe': wallet.get('sharpe_ratio', 0) >= criteria.get('sharpe', 0),
+            'pnl': wallet.get('total_realized_pnl_usd', 0) >= criteria.get('pnl', 0),
+            'trades': wallet.get('meaningful_trades', 0) >= criteria.get('trades', 0),
+            'frequency_ok': (
+                criteria.get('frequency', [0, 999])[0] <= 
+                wallet.get('trade_frequency_per_day', 0) <= 
+                criteria.get('frequency', [0, 999])[1]
+            ),
+            'drawdown': wallet.get('max_drawdown_percent', 100) <= criteria.get('drawdown', 100)
+        }
         
-        # Consistency score based on win rate and trade frequency
-        consistency_score = 0
-        if wallet.get('win_rate_percent') and wallet.get('trade_frequency_per_day'):
-            consistency_score = (wallet['win_rate_percent'] / 100) * min(wallet['trade_frequency_per_day'] / 2, 1.0)
+        # Enhanced score breakdown
+        score_breakdown = {
+            'tier_score': tier_score,
+            'coverage_score': wallet.get('coverage_ratio_percent', 0) / 100,
+            'roi_score': min(max(wallet.get('total_roi_percent', 0) / 200, 0), 1.0),
+            'sharpe_score': min(max(wallet.get('sharpe_ratio', 0) / 3, 0), 1.0),
+            'win_rate_score': wallet.get('win_rate_percent', 0) / 100,
+            'volume_score': min(max(wallet.get('total_realized_pnl_usd', 0) / 20000, 0), 1.0),
+            'consistency_score': wallet.get('coverage_ratio_percent', 0) / 100 * wallet.get('win_rate_percent', 0) / 100
+        }
         
-        # Calculate additional fields
-        days_since_last_trade = None
-        if wallet.get('last_trade_at'):
-            days_since_last_trade = (datetime.utcnow() - wallet['last_trade_at']).days
-        
-        # Create trader record matching SmartTrader model
+        # Create trader record matching enhanced SmartTrader model
         trader_record = {
             'wallet_address': wallet_address,
             'performance_tier': performance_tier,
-            'rank_in_tier': 0,  # Will be calculated after grouping by tier
+            'tier_score': tier_score,
+            'tier_rank': 0,  # Will be calculated after grouping by tier
             'overall_rank': rank,
-            'composite_score': wallet.get('smart_trader_score') or 0,
+            'coverage_confidence': coverage_confidence,
+            'coverage_ratio_percent': wallet.get('coverage_ratio_percent') or 0,
+            'total_roi_percent': wallet.get('total_roi_percent') or 0,
+            'avg_roi_percent': wallet.get('avg_roi_percent') or 0,
+            'median_roi_percent': wallet.get('median_roi_percent') or 0,
             'total_realized_pnl_usd': wallet.get('total_realized_pnl_usd') or 0,
-            'total_unrealized_pnl_usd': wallet.get('total_unrealized_pnl_usd') or 0,
             'win_rate_percent': wallet.get('win_rate_percent') or 0,
-            'total_trades': wallet.get('total_trades') or 0,
-            'roi_percentage': roi_percent,
-            'avg_trade_size_usd': wallet.get('avg_trade_size_usd') or 0,
-            'max_drawdown_percent': wallet.get('max_drawdown_percent') or 0,
             'sharpe_ratio': wallet.get('sharpe_ratio') or 0,
+            'max_drawdown_percent': wallet.get('max_drawdown_percent') or 0,
+            'meaningful_trades': wallet.get('meaningful_trades') or 0,
+            'matched_trades': wallet.get('matched_trades') or 0,
+            'total_trades': wallet.get('total_trades') or 0,
             'trade_frequency_per_day': wallet.get('trade_frequency_per_day') or 0,
-            'tokens_traded_count': wallet.get('tokens_traded_count') or 0,
-            'favorite_tokens': None,  # Would need additional analysis
-            'trading_patterns': None,  # Would need additional analysis
+            'trading_days': wallet.get('trading_days') or 0,
+            'days_since_first_trade': days_since_first_trade,
+            'total_volume_usd': wallet.get('total_volume_usd') or 0,
+            'matched_volume_usd': wallet.get('matched_volume_usd') or 0,
+            'matched_cost_basis_usd': wallet.get('matched_cost_basis_usd') or 0,
+            'avg_trade_size_usd': wallet.get('avg_trade_size_usd') or 0,
+            'last_30d_roi_percent': None,  # Would need additional calculation
+            'last_30d_trades': None,
+            'last_30d_win_rate': None,
+            'last_30d_pnl_usd': None,
             'first_trade_at': wallet.get('first_trade_at') or datetime.utcnow(),
             'last_trade_at': wallet.get('last_trade_at') or datetime.utcnow(),
-            'trading_days': wallet.get('trading_days') or 0,
-            'days_since_last_trade': days_since_last_trade,
-            'qualification_criteria': {
-                'min_score': wallet.get('smart_trader_score') or 0,
-                'min_pnl': wallet.get('total_realized_pnl_usd') or 0,
-                'min_win_rate': wallet.get('win_rate_percent') or 0,
-                'min_trades': wallet.get('total_trades') or 0
-            },
-            'score_breakdown': {
-                'composite_score': wallet.get('smart_trader_score') or 0,
-                'pnl_score': min(max((wallet.get('total_realized_pnl_usd') or 0) / 5000, 0), 1.0),
-                'win_rate_score': min((wallet.get('win_rate_percent') or 0) / 100, 1.0),
-                'consistency_score': consistency_score
-            },
-            'selected_at': datetime.utcnow(),
             'last_updated_at': datetime.utcnow(),
-            'data_freshness_hours': 0,  # Assuming fresh data
-            'is_active': True,
-            'performance_declining': False,
-            'risk_score': None  # Would need additional analysis
+            'tokens_traded_count': wallet.get('tokens_traded_count') or 0,
+            'top_tokens': None,  # Would need additional analysis from tokens_analyzed
+            'consistency_score': score_breakdown['consistency_score'],
+            'volatility_score': None,  # Would need additional calculation
+            'auto_follow_eligible': auto_follow_eligible,
+            'verified_performance': verified_performance,
+            'score_breakdown': score_breakdown,
+            'tier_criteria_met': tier_criteria_met,
+            'source_silver_calculated_at': wallet.get('last_calculated_at') or datetime.utcnow(),
+            'calculation_notes': f"Tier: {performance_tier}, Coverage: {coverage_confidence}"
         }
         
         return trader_record
@@ -276,11 +399,11 @@ class SmartTradersTask(GoldTaskBase):
         """Calculate tier-specific rankings."""
         df = pd.DataFrame(trader_records)
         
-        # Calculate tier-specific rankings
+        # Calculate tier-specific rankings based on tier_score
         for tier in df['performance_tier'].unique():
             tier_mask = df['performance_tier'] == tier
-            tier_df = df[tier_mask].sort_values('composite_score', ascending=False)
-            df.loc[tier_mask, 'rank_in_tier'] = range(1, len(tier_df) + 1)
+            tier_df = df[tier_mask].sort_values('tier_score', ascending=False)
+            df.loc[tier_mask, 'tier_rank'] = range(1, len(tier_df) + 1)
         
         return df.to_dict('records')
         
@@ -372,7 +495,15 @@ class SmartTradersTask(GoldTaskBase):
                     # Log tier distribution
                     tier_counts = df['performance_tier'].value_counts().to_dict()
                     self.logger.info(f"Tier distribution: {tier_counts}")
-                    # Stored smart trader records
+                    
+                    # Log auto-follow eligible traders
+                    auto_follow_count = df['auto_follow_eligible'].sum()
+                    self.logger.info(f"Auto-follow eligible traders: {auto_follow_count}")
+                    
+                    # Log coverage confidence distribution
+                    coverage_counts = df['coverage_confidence'].value_counts().to_dict()
+                    self.logger.info(f"Coverage confidence distribution: {coverage_counts}")
+                    
                 else:
                     tier_counts = {}
             

@@ -20,9 +20,9 @@ bronze_tokens → silver_tokens → bronze_whales → silver_whales → bronze_t
 - ✅ **silver_tokens**: Working - Selects top tokens based on scoring criteria
 - ✅ **bronze_whales**: Working - Fetches top holders for selected tokens using BirdEye v3 API
 - ✅ **silver_whales**: Working - Processes all unique whale addresses without filtering
-- 🔄 **bronze_transactions**: Ready for implementation - Fetches transaction history for whales
-- 🔄 **silver_wallet_pnl**: Ready for implementation - Calculates FIFO-based PnL metrics
-- 🔄 **smart_traders**: Ready for implementation - Ranks traders by performance tiers
+- ✅ **bronze_transactions**: Working - Fetches transaction history for whales using BirdEye API
+- ✅ **silver_wallet_pnl**: Working - Calculates FIFO-based PnL metrics with ROI tracking
+- ✅ **smart_traders**: Working - Enhanced tiered classification with coverage-based confidence scoring
 
 ## Key Features
 
@@ -46,6 +46,13 @@ All database operations use SQLModel for type safety and automatic schema genera
 - **Batch processing**: Configurable batch sizes for memory management
 - **Connection pooling**: Optimized database connections with retry logic
 - **NaN/NULL handling**: Robust data cleaning to handle missing values from API responses
+
+### Enhanced Tiered Classification System
+- **5 Performance Tiers**: ELITE, STRONG, PROMISING, QUALIFIED, EXPERIMENTAL with tier-specific criteria
+- **Coverage-Based Confidence**: High/Good/Acceptable/Low confidence levels based on trade matching ratios
+- **Comprehensive Scoring**: Multi-factor scoring including ROI, win rates, Sharpe ratios, and trading frequency
+- **Auto-Follow Eligibility**: Smart filtering for automated trading systems with verified performance tracking
+- **Real-Time Webhook Integration**: Automatic webhook updates with tier-prioritized trader addresses
 
 ### Recent Improvements
 - **Enhanced Bronze Tokens Model**: Added flattened extension fields (coingecko_id, website, social links) for comprehensive token metadata
@@ -213,11 +220,13 @@ Each task has dedicated configuration sections:
 - Processes wallets in batches with memory management
 - Only includes realized PnL (completed trades)
 
-### 7. Smart Traders
-- Ranks traders based on performance metrics
-- Assigns performance tiers (ELITE, STRONG, PROMISING, QUALIFIED)
-- Calculates composite scores and rankings
-- Tracks historical performance changes
+### 7. Smart Traders (Enhanced Gold Layer)
+- **Tiered Classification**: 5 performance tiers with coverage-based confidence scoring
+- **Comprehensive Metrics**: ROI, win rates, Sharpe ratios, drawdown limits, and trading frequency
+- **Coverage Confidence**: High/Good/Acceptable/Low based on trade matching ratios (60-85% thresholds)
+- **Auto-Follow Eligibility**: Advanced filtering for automated trading system integration
+- **Tier-Specific Scoring**: Weighted algorithms emphasizing coverage reliability for lower tiers
+- **Real-Time Webhook Updates**: Automatic synchronization with Helius webhook monitoring
 
 ## Monitoring and Observability
 

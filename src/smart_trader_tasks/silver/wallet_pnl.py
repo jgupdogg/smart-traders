@@ -65,6 +65,8 @@ class TokenPosition:
         self.total_sale_value = 0
         self.matched_sale_value = 0
         self.unmatched_sale_value = 0
+        self.matched_cost_basis = 0  # Track cost basis for matched sales
+        self.trade_rois: List[float] = []  # Track ROI for each matched trade
         
     def add_purchase(self, quantity: float, price: float, timestamp: datetime, tx_hash: str):
         """Add a purchase to the position."""
@@ -132,6 +134,12 @@ class TokenPosition:
             self.realized_pnl += matched_pnl
             self.matched_trade_count += 1
             self.matched_sale_value += matched_proceeds
+            self.matched_cost_basis += cost_basis
+            
+            # Calculate ROI for this trade
+            if cost_basis > 0:
+                trade_roi = ((matched_proceeds - cost_basis) / cost_basis) * 100
+                self.trade_rois.append(trade_roi)
             
             # Only count as winning trade if profit is at least $50 to filter out minor gains
             if matched_pnl >= 50.0:
@@ -323,6 +331,25 @@ class WalletPnLCalculator:
         total_sale_volume = sum(pos.total_sale_value for pos in active_positions.values())
         total_volume = total_purchase_volume + total_sale_volume
         
+        # Calculate ROI metrics (only for matched trades)
+        total_matched_cost_basis = sum(pos.matched_cost_basis for pos in active_positions.values())
+        total_roi_percent = 0
+        avg_roi_percent = 0
+        median_roi_percent = 0
+        
+        if total_matched_cost_basis > 0:
+            # Overall ROI based on total realized PnL and total cost basis
+            total_roi_percent = (self.total_realized_pnl / total_matched_cost_basis) * 100
+        
+        # Collect all trade ROIs for average and median calculations
+        all_trade_rois = []
+        for pos in active_positions.values():
+            all_trade_rois.extend(pos.trade_rois)
+        
+        if all_trade_rois:
+            avg_roi_percent = np.mean(all_trade_rois)
+            median_roi_percent = np.median(all_trade_rois)
+        
         # Calculate average trade size based on matched trades only
         avg_trade_size = (total_purchase_volume + matched_sale_volume) / (matched_trades * 2) if matched_trades > 0 else 0
         
@@ -353,6 +380,7 @@ class WalletPnLCalculator:
             coverage_ratio >= 70 and  # At least 70% of trades must have known cost basis
             win_rate >= 60 and    # Minimum win rate (for meaningful trades)
             self.total_realized_pnl > 500 and  # Minimum absolute profit ($500)
+            total_roi_percent >= 20 and  # Minimum 20% ROI on matched trades
             trading_days >= 2     # At least 2 days of activity
         )
         
@@ -365,13 +393,15 @@ class WalletPnLCalculator:
             volume_score = min(total_volume / 50000, 1.0)  # $50k = max score
             frequency_score = min(trade_frequency / 10, 1.0)  # 10 trades/day = max score
             sharpe_score = min(max(sharpe_ratio / 3, 0), 1.0) if sharpe_ratio > 0 else 0  # 3.0 = max sharpe
+            roi_score = min(max(total_roi_percent / 200, 0), 1.0)  # 200% ROI = max score
             
             smart_trader_score = (
-                pnl_score * 0.35 +      # Profitability is most important
-                win_rate_score * 0.25 + # Consistency matters
-                volume_score * 0.20 +   # Scale of trading
+                pnl_score * 0.25 +      # Absolute profitability
+                roi_score * 0.25 +      # Return on investment
+                win_rate_score * 0.20 + # Consistency matters
+                volume_score * 0.15 +   # Scale of trading
                 frequency_score * 0.10 + # Activity level
-                sharpe_score * 0.10     # Risk-adjusted returns
+                sharpe_score * 0.05     # Risk-adjusted returns
             )
         
         # PnL summary calculated
@@ -397,6 +427,10 @@ class WalletPnLCalculator:
             'matched_volume_usd': round(total_purchase_volume + matched_sale_volume, 2),
             'unmatched_volume_usd': round(unmatched_sale_volume, 2),
             'avg_trade_size_usd': round(avg_trade_size, 2),
+            'matched_cost_basis_usd': round(total_matched_cost_basis, 2),
+            'total_roi_percent': round(total_roi_percent, 2),
+            'avg_roi_percent': round(avg_roi_percent, 2),
+            'median_roi_percent': round(median_roi_percent, 2),
             'first_trade_at': self.first_trade_date,
             'last_trade_at': self.last_trade_date,
             'trading_days': int(trading_days),
@@ -417,7 +451,10 @@ class WalletPnLCalculator:
                         'unmatched_trades': pos.unmatched_trade_count,
                         'purchase_volume': round(pos.total_purchase_value, 2),
                         'matched_sale_volume': round(pos.matched_sale_value, 2),
-                        'unmatched_sale_volume': round(pos.unmatched_sale_value, 2)
+                        'unmatched_sale_volume': round(pos.unmatched_sale_value, 2),
+                        'matched_cost_basis': round(pos.matched_cost_basis, 2),
+                        'roi_percent': round((pos.realized_pnl / pos.matched_cost_basis * 100) if pos.matched_cost_basis > 0 else 0, 2),
+                        'avg_trade_roi': round(np.mean(pos.trade_rois) if pos.trade_rois else 0, 2)
                     }
                     for pos in active_positions.values()
                     if pos.matched_trade_count > 0 or pos.unmatched_trade_count > 0 or abs(pos.realized_pnl) > 1
@@ -565,8 +602,8 @@ class SilverWalletPnLTask(SilverTaskBase):
                     metadata={"skip_reason": "insufficient_trades", "transaction_count": len(transactions)}
                 )
                 
-                # Mark whale as completed but with no PnL (skipped)
-                self._mark_whale_completed(session, wallet_address)
+                # Don't mark whale as completed if skipped - only mark completed when PnL is actually calculated
+                # self._mark_whale_completed(session, wallet_address)
                 return None
             
             # Calculate PnL using FIFO method

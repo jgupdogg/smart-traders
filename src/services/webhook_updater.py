@@ -34,13 +34,23 @@ class WebhookAddressUpdater:
             conn = psycopg2.connect(**self.db_config)
             cursor = conn.cursor()
             
-            # Query top 100 smart traders using same criteria as smart traders task
+            # Query top 100 smart traders using enhanced tier scoring
             query = """
             SELECT wallet_address 
             FROM gold.smart_traders 
             WHERE wallet_address IS NOT NULL
               AND wallet_address != ''
-            ORDER BY composite_score DESC, total_realized_pnl_usd DESC
+            ORDER BY 
+                CASE performance_tier 
+                    WHEN 'ELITE' THEN 1 
+                    WHEN 'STRONG' THEN 2 
+                    WHEN 'PROMISING' THEN 3 
+                    WHEN 'QUALIFIED' THEN 4 
+                    WHEN 'EXPERIMENTAL' THEN 5 
+                    ELSE 6 
+                END,
+                tier_score DESC, 
+                total_realized_pnl_usd DESC
             LIMIT 100
             """
             

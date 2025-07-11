@@ -116,14 +116,80 @@ silver_wallet_pnl:
 
 # Smart Traders (Gold) Task Configuration
 smart_traders:
-  # Smart trader qualification criteria
-  min_win_rate: 60.0                  # 60% minimum win rate
-  min_realized_pnl: 1000.0            # $1000 minimum realized PnL
-  min_trade_count: 10                 # Minimum 10 trades
-  min_trading_days: 7                 # Minimum 7 days of trading activity
-  
   # Processing parameters
   batch_size: 50                      # Database batch size for operations
+  max_processing_time_minutes: 30     # Maximum time for task completion
+  
+  # Tier classification settings
+  tier_criteria:
+    elite:
+      coverage_ratio: 85              # Minimum coverage ratio percentage
+      roi: 100                        # Minimum ROI percentage
+      win_rate: 70                    # Minimum win rate percentage
+      sharpe: 2.5                     # Minimum Sharpe ratio
+      pnl: 10000                      # Minimum PnL in USD
+      meaningful_trades: 50           # Minimum meaningful trades
+      frequency_min: 0.5              # Minimum trades per day
+      frequency_max: 5                # Maximum trades per day
+      max_drawdown: 20                # Maximum drawdown percentage
+    
+    strong:
+      coverage_ratio: 80
+      roi: 60
+      win_rate: 65
+      sharpe: 2.0
+      pnl: 5000
+      meaningful_trades: 30
+      frequency_min: 0.3
+      frequency_max: 7
+      max_drawdown: 25
+    
+    promising:
+      coverage_ratio: 75
+      roi: 40
+      win_rate: 60
+      sharpe: 1.5
+      pnl: 2000
+      meaningful_trades: 20
+      frequency_min: 0.2
+      frequency_max: 10
+      max_drawdown: 30
+    
+    qualified:
+      coverage_ratio: 70
+      roi: 20
+      win_rate: 55
+      sharpe: 1.0
+      pnl: 500
+      meaningful_trades: 10
+      frequency_min: 0.1
+      frequency_max: 15
+      max_drawdown: 40
+    
+    experimental:
+      coverage_ratio: 60
+      roi: 200                        # Higher ROI requirement for lower coverage
+      win_rate: 75
+      sharpe: 3.0
+      pnl: 1000
+      meaningful_trades: 15
+      frequency_min: 0.1
+      frequency_max: 20
+      max_drawdown: 35
+  
+  # Auto-follow eligibility
+  auto_follow:
+    min_tier: "STRONG"               # Minimum tier for auto-follow
+    min_coverage: 85                 # Minimum coverage ratio
+    min_verified_days: 30            # Minimum days of verified performance
+  
+  # Performance tracking
+  track_history: true                # Enable performance history tracking
+  history_retention_days: 90         # Days to retain performance history
+  
+  # Limits
+  max_traders_per_tier: 100          # Maximum traders to store per tier
+  min_traders_total: 10              # Minimum total traders to process
   
   # Performance tiers
   performance_tiers:
