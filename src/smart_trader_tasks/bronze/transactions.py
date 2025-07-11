@@ -38,7 +38,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
             result = session.execute(raw_query, {"limit": self.config.max_wallets_per_run})
             whales_data = result.fetchall()
             
-            self.logger.info(f"Found {len(whales_data)} whales via raw SQL")
+            self.logger.debug(f"Found {len(whales_data)} whales via raw SQL")
             
             whales_to_process = []
             for row in whales_data:
@@ -252,11 +252,11 @@ class BronzeTransactionsTask(BronzeTaskBase):
                         "message": "No whales to process"
                     }
                 
-                self.logger.info(f"Processing {len(whales_to_process)} whales for transaction data")
+                # Only log final result
                 
                 # Process whales in batches
-                for i in range(0, len(whales_to_process), self.config.batch_size):
-                    batch = whales_to_process[i:i + self.config.batch_size]
+                for i in range(0, len(whales_to_process), self.config.wallet_batch_size):
+                    batch = whales_to_process[i:i + self.config.wallet_batch_size]
                     
                     for whale in batch:
                         try:
@@ -268,7 +268,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                             continue
                     
                     # Brief pause between batches
-                    if i + self.config.batch_size < len(whales_to_process):
+                    if i + self.config.wallet_batch_size < len(whales_to_process):
                         time.sleep(2)
             
             # Log task completion
@@ -297,7 +297,7 @@ class BronzeTransactionsTask(BronzeTaskBase):
                 "failed_wallets": self.failed_entities
             }
             
-            self.logger.info(f"Bronze transactions task completed: {result}")
+            self.logger.info(f"Bronze transactions: {status} - {self.processed_entities} wallets, {self.new_records + self.updated_records} transactions")
             return result
             
         except Exception as e:

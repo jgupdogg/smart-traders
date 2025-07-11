@@ -101,7 +101,8 @@ class BronzeTransactionsConfig:
     max_transactions_per_wallet: int = 100
     lookback_days: int = 30
     wallet_api_delay: float = 1.0
-    batch_size: int = 5
+    batch_size: int = 100  # Database batch size for upserting transactions
+    wallet_batch_size: int = 5  # Number of wallets to process per API batch
     max_wallets_per_run: int = 100  # Increased from 20 to 100
     refetch_interval_days: int = 30
     min_transaction_value_usd: float = 100
@@ -315,6 +316,8 @@ class Settings:
         config = self.config_data.get('bronze_whales', {})
         return BronzeWhalesConfig(
             top_holders_limit=config.get('top_holders_limit', 20),
+            skip_top_percentage=config.get('skip_top_percentage', 10.0),
+            holders_per_token=config.get('holders_per_token', 1000),
             min_holding_percentage=config.get('min_holding_percentage', 0.5),
             api_rate_limit_delay=config.get('api_rate_limit_delay', 0.5),
             max_tokens_per_run=config.get('max_tokens_per_run', 10),
@@ -345,7 +348,8 @@ class Settings:
             max_transactions_per_wallet=config.get('max_transactions_per_wallet', 100),
             lookback_days=config.get('lookback_days', 30),
             wallet_api_delay=config.get('wallet_api_delay', 1.0),
-            batch_size=config.get('batch_size', 5),
+            batch_size=config.get('batch_size', 100),
+            wallet_batch_size=config.get('wallet_batch_size', 5),
             max_wallets_per_run=config.get('max_wallets_per_run', 20),
             refetch_interval_days=config.get('refetch_interval_days', 30),
             min_transaction_value_usd=config.get('min_transaction_value_usd', 100),

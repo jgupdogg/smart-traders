@@ -486,7 +486,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             status_result = session.execute(status_query)
             status = status_result.fetchone()
             
-            self.logger.info(f"Whale processing status: {status.total_whales} total, {status.pnl_processed} PnL processed, {status.transactions_processed} transactions processed, {status.ready_for_pnl} ready for PnL")
+            self.logger.debug(f"Whale processing status: {status.total_whales} total, {status.pnl_processed} PnL processed, {status.transactions_processed} transactions processed, {status.ready_for_pnl} ready for PnL")
             
             # Use raw SQL for consistency - process ALL unprocessed wallets
             raw_query = text("""
@@ -499,7 +499,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             result = session.execute(raw_query)
             whales_data = result.fetchall()
             
-            self.logger.info(f"Found {len(whales_data)} whales ready for PnL processing")
+            self.logger.debug(f"Found {len(whales_data)} whales ready for PnL processing")
             
             whales_to_process = []
             for row in whales_data:
@@ -592,7 +592,7 @@ class SilverWalletPnLTask(SilverTaskBase):
             
             if len(transactions) < self.config.min_trades_for_calculation:
                 # Skipping wallet - insufficient transactions
-                self.logger.info(f"Skipping wallet {wallet_address}: only {len(transactions)} transactions (minimum: {self.config.min_trades_for_calculation})")
+                self.logger.debug(f"Skipping wallet {wallet_address}: only {len(transactions)} transactions (minimum: {self.config.min_trades_for_calculation})")
                 
                 self.state_manager.create_or_update_state(
                     task_name=self.task_name,
@@ -684,7 +684,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                         "message": "No wallets to process"
                     }
                 
-                self.logger.info(f"Processing {len(whales_to_process)} wallets for PnL calculation")
+                # Only log final result
                 
                 # Process wallets
                 pnl_records = []
@@ -705,7 +705,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                 # Store PnL records if any were processed
                 successfully_stored_wallets = []
                 if pnl_records:
-                    self.logger.info(f"Storing {len(pnl_records)} PnL records to database")
+                    # Store records silently
                     df = pd.DataFrame(pnl_records)
                     
                     try:
@@ -728,7 +728,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                             except Exception as e:
                                 self.logger.error(f"Failed to mark whale {wallet_address} as completed: {e}")
                         
-                        self.logger.info(f"Successfully stored {self.new_records + self.updated_records} PnL records and marked {len(successfully_stored_wallets)} whales as completed")
+                        # Success - continue silently
                         
                     except Exception as e:
                         self.logger.error(f"Failed to store PnL records: {e}")
@@ -761,7 +761,7 @@ class SilverWalletPnLTask(SilverTaskBase):
                 "failed_wallets": self.failed_entities
             }
             
-            self.logger.info(f"Silver wallet PnL task completed: {result}")
+            self.logger.info(f"Silver wallet PnL: {status} - {self.processed_entities} wallets, {self.new_records + self.updated_records} PnL records")
             return result
             
         except Exception as e:

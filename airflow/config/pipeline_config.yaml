@@ -13,11 +13,11 @@ pipeline:
 # Bronze Tokens Task Configuration
 bronze_tokens:
   # Token filtering criteria
-  token_limit: 50
+  token_limit: 100
   min_liquidity: 100000          # $100k minimum liquidity
-  max_liquidity: 50000000        # $50M maximum liquidity  
+  max_liquidity: 200000000        # $200M maximum liquidity  
   min_volume_1h_usd: 50000       # $50k minimum 1-hour volume
-  min_price_change_2h_percent: 15.0   # 15% minimum 2-hour price change
+  min_price_change_2h_percent: 0.0   # 15% minimum 2-hour price change
   min_price_change_24h_percent: 20.0  # 20% minimum 24-hour price change
   
   # API parameters
@@ -25,7 +25,7 @@ bronze_tokens:
   api_rate_limit_delay: 0.5      # Delay between API calls (seconds)
   
   # Processing parameters
-  batch_size: 10                 # Tokens processed per batch
+  batch_size: 50                 # Tokens processed per batch
   max_processing_time_minutes: 30
 
 # Silver Tokens Task Configuration  
@@ -50,7 +50,9 @@ silver_tokens:
 # Bronze Whales Task Configuration
 bronze_whales:
   # Whale criteria
-  top_holders_limit: 100         # Top N holders per token
+  top_holders_limit: 100         # Legacy fallback - not normally used
+  holders_per_token: 2000        # Number of middle-tier holders to fetch per token
+  skip_top_percentage: 10.0      # Skip top 10% of holders (exchanges/protocols)
   min_holding_percentage: 0.5    # Minimum 0.5% holding percentage
   
   # API parameters
@@ -58,7 +60,7 @@ bronze_whales:
   max_tokens_per_run: 999999     # No limit - process ALL unprocessed tokens
   
   # Processing parameters
-  batch_size: 20                 # Tokens processed per batch
+  batch_size: 50                 # Tokens processed per batch
   refetch_interval_hours: 72     # Refetch whale data every 72 hours
 
 # Silver Whales Task Configuration
@@ -87,7 +89,8 @@ bronze_transactions:
   wallet_api_delay: 1.0               # Delay between wallet API calls
   
   # Processing parameters
-  batch_size: 5                       # Wallets processed per batch
+  batch_size: 100                     # Database batch size for upserting transactions
+  wallet_batch_size: 5                # Wallets processed per API batch (keep small for API limits)
   max_wallets_per_run: 999999         # No limit - process ALL unprocessed wallets
   refetch_interval_days: 30           # Refetch transactions every 30 days
   
